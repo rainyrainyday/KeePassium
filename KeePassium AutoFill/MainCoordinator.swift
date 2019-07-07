@@ -49,6 +49,8 @@ class MainCoordinator: NSObject, Coordinator {
     }
     
     func start() {
+        DatabaseManager.shared.closeDatabase(clearStoredKey: false)
+        
         databaseManagerNotifications = DatabaseManagerNotifications(observer: self)
         databaseManagerNotifications?.startObserving()
         watchdog.didBecomeActive()
@@ -74,12 +76,7 @@ class MainCoordinator: NSObject, Coordinator {
     
     public func didReceiveMemoryWarning() {
         Diag.error("Received a memory warning")
-        DatabaseManager.shared.progress.cancel()
-        let alert = UIAlertController.make(
-            title: NSLocalizedString("Not enough memory", comment: "Title of an `Out of Memory` error message"),
-            message: NSLocalizedString("Not enough memory to continue. This can happen with large databases or memory-demanding database settings (Argon2).\n\nPlease contact us if you need help with this.", comment: "Message shown when the app runs out of memory."),
-            cancelButtonTitle: LString.actionDismiss)
-        navigationController.present(alert, animated: true, completion: nil)
+        DatabaseManager.shared.progress.cancel(reason: .lowMemoryWarning)
     }
     
     func cleanup() {
@@ -95,6 +92,18 @@ class MainCoordinator: NSObject, Coordinator {
 
     func returnCredentials(entry: Entry) {
         watchdog.restart()
+        
+        let settings = Settings.current
+        if settings.isCopyTOTPOnAutoFill,
+            let totpGenerator = TOTPGeneratorFactory.makeGenerator(for: entry)
+        {
+            let totpString = totpGenerator.generate()
+            Clipboard.general.insert(
+                text: totpString,
+                timeout: TimeInterval(settings.clipboardTimeout.seconds)
+            )
+        }
+        
         let passwordCredential = ASPasswordCredential(user: entry.userName, password: entry.password)
         rootController.extensionContext.completeRequest(
             withSelectedCredential: passwordCredential,
@@ -166,7 +175,7 @@ class MainCoordinator: NSObject, Coordinator {
     
     func addDatabase() {
         let picker = UIDocumentPickerViewController(
-            documentTypes: FileType.publicDataUTIs,
+            documentTypes: FileType.databaseUTIs,
             in: .open)
         picker.delegate = self
         navigationController.topViewController?.present(picker, animated: true, completion: nil)

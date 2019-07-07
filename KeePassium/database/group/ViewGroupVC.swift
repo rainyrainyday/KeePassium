@@ -95,6 +95,11 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         groupChangeNotifications = GroupChangeNotifications(observer: self)
         entryChangeNotifications = EntryChangeNotifications(observer: self)
         settingsNotifications = SettingsNotifications(observer: self)
+        
+        let longPressGestureRecognizer = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(didLongPressTableView))
+        tableView.addGestureRecognizer(longPressGestureRecognizer)
     }
     
     override open func viewDidAppear(_ animated: Bool) {
@@ -187,6 +192,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         searchController.dimsBackgroundDuringPresentation = false
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.hidesNavigationBarDuringPresentation = true
+        searchController.delegate = self
 
         definesPresentationContext = true
         searchController.searchResultsUpdater = self
@@ -370,8 +376,9 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             guard indexPath.row < searchResult.entries.count else { return nil }
             return searchResult.entries[indexPath.row]
         } else {
-            guard indexPath.row >= groupsSorted.count else { return nil }
-            return entriesSorted[indexPath.row - groupsSorted.count].value
+            let entryIndex = indexPath.row - groupsSorted.count
+            guard entryIndex >= 0 && entryIndex < entriesSorted.count else { return nil }
+            return entriesSorted[entryIndex].value
         }
     }
 
@@ -409,7 +416,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         _ tableView: UITableView,
         canEditRowAt indexPath: IndexPath) -> Bool
     {
-        return true
+        return getEntry(at: indexPath) != nil || getGroup(at: indexPath) != nil
     }
 
     override open func tableView(
@@ -599,6 +606,15 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         present(vc, animated: true, completion: nil)
     }
     
+    @objc func didLongPressTableView(_ gestureRecognizer: UILongPressGestureRecognizer) {
+        let point = gestureRecognizer.location(in: tableView)
+        guard gestureRecognizer.state == .began,
+            let indexPath = tableView.indexPathForRow(at: point),
+            tableView(tableView, canEditRowAt: indexPath),
+            let cell = tableView.cellForRow(at: indexPath) else { return }
+        cell.demoShowEditActions(lastActionColor: UIColor.destructiveTint)
+    }
+    
     
     func saveDatabase() {
         databaseManagerNotifications.startObserving()
@@ -757,3 +773,8 @@ extension ViewGroupVC: UISearchResultsUpdating {
     }
 }
 
+extension ViewGroupVC: UISearchControllerDelegate {
+    public func didDismissSearchController(_ searchController: UISearchController) {
+        refresh()
+    }
+}

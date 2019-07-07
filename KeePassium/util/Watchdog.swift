@@ -97,15 +97,16 @@ class Watchdog {
         delegate.showAppCover(self)
         if delegate.isAppLocked { return }
 
-        let databaseTimeout = Settings.current.databaseCloseTimeout
+        let databaseTimeout = Settings.current.databaseLockTimeout
         if databaseTimeout == .immediately {
             Diag.debug("Going to background: Database Lock engaged")
             engageDatabaseLock()
         }
         
         let appTimeout = Settings.current.appLockTimeout
-        if appTimeout == .immediately {
+        if appTimeout.triggerMode == .appMinimized {
             Diag.debug("Going to background: App Lock engaged")
+            Watchdog.shared.restart() 
         }
         
         appLockTimer?.invalidate()
@@ -159,7 +160,7 @@ class Watchdog {
     }
     
     private func isShouldEngageDatabaseLock() -> Bool {
-        let timeout = Settings.current.databaseCloseTimeout
+        let timeout = Settings.current.databaseLockTimeout
         switch timeout {
         case .never:
             return false
@@ -181,10 +182,10 @@ class Watchdog {
         }
         
         let timeout = Settings.current.appLockTimeout
-        switch timeout {
-        case .never, .immediately:
+        switch timeout.triggerMode {
+        case .appMinimized:
             return
-        default:
+        case .userIdle:
             appLockTimer = Timer.scheduledTimer(
                 timeInterval: Double(timeout.seconds),
                 target: self,
@@ -199,7 +200,7 @@ class Watchdog {
             databaseLockTimer.invalidate()
         }
         
-        let timeout = Settings.current.databaseCloseTimeout
+        let timeout = Settings.current.databaseLockTimeout
         Diag.verbose("Database Lock timeout: \(timeout.seconds)")
         switch timeout {
         case .never, .immediately:
@@ -229,6 +230,7 @@ class Watchdog {
         Diag.info("Engaging Database Lock")
         self.databaseLockTimer?.invalidate()
         self.databaseLockTimer = nil
+        try? Keychain.shared.removeAllDatabaseKeys() 
         DatabaseManager.shared.closeDatabase(
             completion: {
                 DispatchQueue.main.async {

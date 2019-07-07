@@ -107,8 +107,7 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     
     override func didReceiveMemoryWarning() {
         Diag.error("Received a memory warning")
-        DatabaseManager.shared.progress.cancel()
-        showErrorMessage(NSLocalizedString("Not enough memory to continue. This can happen with large databases or memory-demanding database settings (Argon2). Please contact us if you need help with this.", comment: "Message shown when the app runs out of memory."))
+        DatabaseManager.shared.progress.cancel(reason: .lowMemoryWarning)
     }
     
     func refresh() {
@@ -120,8 +119,15 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
             showErrorMessage(databaseRef.info.errorMessage)
         }
         
-        if let associatedKeyFileRef = Settings.current.getKeyFileForDatabase(databaseRef: databaseRef) {
-            setKeyFile(urlRef: associatedKeyFileRef)
+        let settings = Settings.current
+        if let associatedKeyFileRef = settings.getKeyFileForDatabase(databaseRef: databaseRef) {
+            let allAvailableKeyFiles = FileKeeper.shared
+                .getAllReferences(fileType: .keyFile, includeBackup: false)
+            if let availableKeyFileRef = associatedKeyFileRef
+                .find(in: allAvailableKeyFiles, fallbackToNamesake: true)
+            {
+                setKeyFile(urlRef: availableKeyFileRef)
+            }
         }
         
         refreshInputMode()

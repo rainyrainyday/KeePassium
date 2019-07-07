@@ -19,10 +19,13 @@ final class TwofishDataCipher: DataCipher {
     
     private var progress = ProgressEx()
     
-    init() {
+    private let isPaddingLikelyMessedUp: Bool
+    
+    init(isPaddingLikelyMessedUp: Bool) {
+        self.isPaddingLikelyMessedUp = isPaddingLikelyMessedUp
     }
 
-    func initProgress() -> Progress {
+    func initProgress() -> ProgressEx {
         progress = ProgressEx()
         return progress
     }
@@ -34,6 +37,7 @@ final class TwofishDataCipher: DataCipher {
         progress.localizedDescription = NSLocalizedString("Encrypting", comment: "Status message")
         let twofish = Twofish(key: key, iv: iv)
         let dataClone = data.clone() 
+        CryptoManager.addPadding(data: dataClone, blockSize: Twofish.blockSize)
         try twofish.encrypt(data: dataClone, progress: progress)
         return dataClone
     }
@@ -46,6 +50,12 @@ final class TwofishDataCipher: DataCipher {
         let twofish = Twofish(key: key, iv: iv) 
         let dataClone = encData.clone() 
         try twofish.decrypt(data: dataClone, progress: progress)
+        
+        if isPaddingLikelyMessedUp {
+            try? CryptoManager.removePadding(data: dataClone) 
+        } else {
+            try CryptoManager.removePadding(data: dataClone) 
+        }
         return dataClone
     }
 }
