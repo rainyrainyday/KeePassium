@@ -20,15 +20,22 @@ class ViewEntryVC: UIViewController, Refreshable {
     private weak var entry: Entry?
     private var isHistoryMode = false
     private var entryChangeNotifications: EntryChangeNotifications!
+    private var settingsNotifications: SettingsNotifications!
+    
     private var progressOverlay: ProgressOverlay?
     private var pages = [UIViewController]()
-    private var currentPageIndex = 0
+    private var currentPageIndex = 0 {
+        didSet {
+            Settings.current.entryViewerPage = currentPageIndex
+        }
+    }
 
     static func make(with entry: Entry, historyMode: Bool = false) -> UIViewController {
         let viewEntryVC = ViewEntryVC.instantiateFromStoryboard()
         viewEntryVC.entry = entry
         viewEntryVC.isHistoryMode = historyMode
         viewEntryVC.refresh()
+        entry.touch(.accessed)
         if !historyMode {
             let navVC = UINavigationController(rootViewController: viewEntryVC)
             return navVC
@@ -60,14 +67,15 @@ class ViewEntryVC: UIViewController, Refreshable {
         pagesViewController.view.frame = containerView.bounds
         containerView.addSubview(pagesViewController.view)
         pagesViewController.didMove(toParent: self)
-        
+
+        settingsNotifications = SettingsNotifications(observer: self)
         entryChangeNotifications = EntryChangeNotifications(observer: self)
         refresh()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-
+        
         refresh()
 
         switchTo(page: Settings.current.entryViewerPage)
@@ -76,18 +84,20 @@ class ViewEntryVC: UIViewController, Refreshable {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         entryChangeNotifications.startObserving()
-        
+        settingsNotifications.startObserving()
+
         navigationItem.rightBarButtonItem =
             pagesViewController.viewControllers?.first?.navigationItem.rightBarButtonItem
     }
 
     override func viewDidDisappear(_ animated: Bool) {
-        Settings.current.entryViewerPage = pageSelector.selectedSegmentIndex
+        settingsNotifications.stopObserving()
         entryChangeNotifications.stopObserving()
         super.viewDidDisappear(animated)
     }
     
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
         refresh()
     }
     
@@ -100,15 +110,20 @@ class ViewEntryVC: UIViewController, Refreshable {
         }
 
         let targetPageVC = pages[index]
+        let previousPageVC = pagesViewController.viewControllers?.first
+        previousPageVC?.willMove(toParent: nil)
+        targetPageVC.willMove(toParent: pagesViewController)
         pagesViewController.setViewControllers(
             [targetPageVC],
             direction: direction,
             animated: true,
             completion: { [weak self] (finished) in
-                guard let _self = self else { return }
-                _self.pageSelector.selectedSegmentIndex = index
-                _self.currentPageIndex = index
-                _self.navigationItem.rightBarButtonItem =
+                guard let self = self else { return }
+                previousPageVC?.didMove(toParent: nil)
+                targetPageVC.didMove(toParent: self.pagesViewController)
+                self.pageSelector.selectedSegmentIndex = index
+                self.currentPageIndex = index
+                self.navigationItem.rightBarButtonItem =
                     targetPageVC.navigationItem.rightBarButtonItem
             }
         )
@@ -120,8 +135,9 @@ class ViewEntryVC: UIViewController, Refreshable {
     }
 
     func refresh() {
-        guard let entry = entry else { return }
-        titleLabel?.text = entry.title
+        guard let entry = entry,
+              isViewLoaded else { return }
+        titleLabel.setText(entry.resolvedTitle, strikethrough: entry.isExpired)
         titleImageView?.image = UIImage.kpIcon(forEntry: entry)
         if isHistoryMode {
             if traitCollection.horizontalSizeClass == .compact {
@@ -139,11 +155,23 @@ class ViewEntryVC: UIViewController, Refreshable {
         } else {
             subtitleLabel?.isHidden = true
         }
+        
+        let currentPage = pagesViewController.viewControllers?.first
+        (currentPage as? Refreshable)?.refresh()
     }
 }
 
 extension ViewEntryVC: EntryChangeObserver {
     func entryDidChange(entry: Entry) {
+        refresh()
+    }
+}
+
+extension ViewEntryVC: SettingsObserver {
+    func settingsDidChange(key: Settings.Keys) {
+        guard key != .recentUserActivityTimestamp else {
+            return
+        }
         refresh()
     }
 }
@@ -194,7 +222,9 @@ extension ViewEntryVC: UIPageViewControllerDelegate {
     {
         if finished && completed {
             guard let selectedVC = pageViewController.viewControllers?.first,
-                let selectedIndex = pages.index(of: selectedVC) else { return }
+                let selectedIndex = pages.firstIndex(of: selectedVC) else { return }
+            previousViewControllers.first?.didMove(toParent: nil)
+            selectedVC.didMove(toParent: pagesViewController)
             currentPageIndex = selectedIndex
             pageSelector.selectedSegmentIndex = selectedIndex
             navigationItem.rightBarButtonItem = selectedVC.navigationItem.rightBarButtonItem
@@ -209,7 +239,7 @@ extension ViewEntryVC: UIPageViewControllerDataSource {
         viewControllerBefore viewController: UIViewController
         ) -> UIViewController?
     {
-        guard let vcIndex = pages.index(of: viewController) else { return nil }
+        guard let vcIndex = pages.firstIndex(of: viewController) else { return nil }
         if vcIndex > 0 {
             return pages[vcIndex - 1]
         } else {
@@ -222,7 +252,7 @@ extension ViewEntryVC: UIPageViewControllerDataSource {
         viewControllerAfter viewController: UIViewController
         ) -> UIViewController?
     {
-        guard let vcIndex = pages.index(of: viewController) else { return nil }
+        guard let vcIndex = pages.firstIndex(of: viewController) else { return nil }
         if vcIndex < pages.count - 1 {
             return pages[vcIndex + 1]
         } else {

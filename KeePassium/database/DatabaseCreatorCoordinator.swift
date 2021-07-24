@@ -13,28 +13,49 @@ protocol DatabaseCreatorCoordinatorDelegate: class {
     func didCreateDatabase(
         in databaseCreatorCoordinator: DatabaseCreatorCoordinator,
         database urlRef: URLReference)
-    func didPressCancel(in databaseCreatorCoordinator: DatabaseCreatorCoordinator)
 }
 
-class DatabaseCreatorCoordinator: NSObject {
+class DatabaseCreatorCoordinator: NSObject, Coordinator {
+    var childCoordinators = [Coordinator]()
+    var dismissHandler: CoordinatorDismissHandler?
+
     weak var delegate: DatabaseCreatorCoordinatorDelegate?
-    
-    private let navigationController: UINavigationController
-    private weak var initialTopController: UIViewController?
+
+    private let router: NavigationRouter
     private let databaseCreatorVC: DatabaseCreatorVC
+    private var isPasswordResetWarningShown = false
     
-    init(navigationController: UINavigationController) {
-        self.navigationController = navigationController
-        self.initialTopController = navigationController.topViewController
-        
+    init(router: NavigationRouter) {
+        self.router = router
         databaseCreatorVC = DatabaseCreatorVC.create()
         super.init()
 
         databaseCreatorVC.delegate = self
     }
     
+    deinit {
+        assert(childCoordinators.isEmpty)
+        removeAllChildCoordinators()
+    }
+    
     func start() {
-        navigationController.pushViewController(databaseCreatorVC, animated: true)
+        if router.navigationController.topViewController == nil {
+            let leftButton = UIBarButtonItem(
+                barButtonSystemItem: .cancel,
+                target: self,
+                action: #selector(didPressDismissButton))
+            databaseCreatorVC.navigationItem.leftBarButtonItem = leftButton
+        }
+        router.push(databaseCreatorVC, animated: true, onPop: {
+            [weak self] (viewController) in
+            guard let self = self else { return }
+            self.removeAllChildCoordinators()
+            self.dismissHandler?(self)
+        })
+    }
+    
+    @objc private func didPressDismissButton() {
+        router.dismiss(animated: true)
     }
     
 
@@ -76,10 +97,12 @@ class DatabaseCreatorCoordinator: NSObject {
             return
         }
         
+        let _challengeHandler = ChallengeResponseManager.makeHandler(for: databaseCreatorVC.yubiKey)
         DatabaseManager.shared.createDatabase(
             databaseURL: tmpFileURL,
             password: databaseCreatorVC.password,
             keyFile: databaseCreatorVC.keyFile,
+            challengeHandler: _challengeHandler,
             template: { [weak self] (rootGroup2) in
                 rootGroup2.name = fileName // override default "/" with a meaningful name
                 self?.addTemplateItems(to: rootGroup2)
@@ -96,35 +119,69 @@ class DatabaseCreatorCoordinator: NSObject {
     private func addTemplateItems(to rootGroup: Group2) {
         let groupGeneral = rootGroup.createGroup()
         groupGeneral.iconID = .folder
-        groupGeneral.name = "General".localized(comment: "Predefined group in a new database")
+        groupGeneral.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] General",
+            value: "General",
+            comment: "Predefined group in a new database")
         
         let groupInternet = rootGroup.createGroup()
         groupInternet.iconID = .globe
-        groupInternet.name = "Internet".localized(comment: "Predefined group in a new database")
+        groupInternet.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] Internet",
+            value: "Internet",
+            comment: "Predefined group in a new database")
+
 
         let groupEmail = rootGroup.createGroup()
         groupEmail.iconID = .envelopeOpen
-        groupEmail.name = "Email".localized(comment: "Predefined group in a new database")
+        groupEmail.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] Email",
+            value: "Email",
+            comment: "Predefined group in a new database")
+
 
         let groupHomebanking = rootGroup.createGroup()
         groupHomebanking.iconID = .currency
-        groupHomebanking.name = "Finance".localized(comment: "Predefined group in a new database")
+        groupHomebanking.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] Finance",
+            value: "Finance",
+            comment: "Predefined group in a new database")
+
         
         let groupNetwork = rootGroup.createGroup()
         groupNetwork.iconID = .server
-        groupNetwork.name = "Network".localized(comment: "Predefined group in a new database")
+        groupNetwork.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] Network",
+            value: "Network",
+            comment: "Predefined group in a new database")
+
 
         let groupLinux = rootGroup.createGroup()
         groupLinux.iconID = .apple
-        groupLinux.name = "OS".localized(comment: "Predefined `Operating system` group in a new database")
+        groupLinux.name = NSLocalizedString(
+            "[Database/Create/TemplateGroup/title] OS",
+            value: "OS",
+            comment: "Predefined `Operating system` group in a new database")
         
         let sampleEntry = rootGroup.createEntry()
         sampleEntry.iconID = .key
-        sampleEntry.title = "Sample Entry".localized(comment: "Title for a sample entry")
-        sampleEntry.userName = "john.smith".localized(comment: "User name for a sample entry. Set to a typical person name for your language.")
-        sampleEntry.password = "pa$$word".localized(comment: "Password for a sample entry. Translation is optional.")
-        sampleEntry.url = "https://keepassium.com" 
-        sampleEntry.notes = "You can also store some notes, if you like.".localized(comment: "Note for a sample entry")
+        sampleEntry.rawTitle = NSLocalizedString(
+            "[Database/Create/TemplateEntry/title] Sample Entry",
+            value: "Sample Entry",
+            comment: "Title for a sample entry")
+        sampleEntry.rawUserName = NSLocalizedString(
+            "[Database/Create/TemplateEntry/userName] john.smith",
+            value: "john.smith",
+            comment: "User name for a sample entry. Set it to a typical person name for your language ( https://en.wikipedia.org/wiki/List_of_placeholder_names_by_language).")
+        sampleEntry.rawPassword = NSLocalizedString(
+            "[Database/Create/TemplateEntry/password] pa$$word",
+            value: "pa$$word",
+            comment: "Password for a sample entry. Translation is optional.")
+        sampleEntry.rawURL = "https://keepassium.com" 
+        sampleEntry.rawNotes = NSLocalizedString(
+            "[Database/Create/TemplateEntry/notes] You can also store some notes, if you like.",
+            value: "You can also store some notes, if you like.",
+            comment: "Note for a sample entry")
     }
     
     private func startSavingDatabase() {
@@ -133,15 +190,18 @@ class DatabaseCreatorCoordinator: NSObject {
     }
     
     private func pickTargetLocation(for tmpDatabaseRef: URLReference) {
-        do{
-            let tmpUrl = try tmpDatabaseRef.resolve() 
-            let picker = UIDocumentPickerViewController(url: tmpUrl, in: .exportToService)
-            picker.modalPresentationStyle = navigationController.modalPresentationStyle
-            picker.delegate = self
-            databaseCreatorVC.present(picker, animated: true, completion: nil)
-        } catch {
-            Diag.error("Failed to resolve temporary DB reference [message: \(error.localizedDescription)]")
-            databaseCreatorVC.setError(message: error.localizedDescription, animated: true)
+        tmpDatabaseRef.resolveAsync { [weak self] (result) in
+            guard let self = self else { return }
+            switch result {
+            case .success(let tmpURL):
+                let picker = UIDocumentPickerViewController(url: tmpURL, in: .exportToService)
+                picker.delegate = self
+                picker.modalPresentationStyle = self.router.navigationController.modalPresentationStyle
+                self.databaseCreatorVC.present(picker, animated: true, completion: nil)
+            case .failure(let error):
+                Diag.error("Failed to resolve temporary DB reference [message: \(error.localizedDescription)]")
+                self.databaseCreatorVC.setError(message: error.localizedDescription, animated: true)
+            }
         }
     }
     
@@ -149,13 +209,12 @@ class DatabaseCreatorCoordinator: NSObject {
         let fileKeeper = FileKeeper.shared
         fileKeeper.addFile(
             url: finalURL,
+            fileType: .database,
             mode: .openInPlace,
             success: { [weak self] (addedRef) in
-                guard let _self = self else { return }
-                if let initialTopController = _self.initialTopController {
-                    _self.navigationController.popToViewController(initialTopController, animated: true)
-                }
-                _self.delegate?.didCreateDatabase(in: _self, database: addedRef)
+                guard let self = self else { return }
+                self.router.pop(viewController: self.databaseCreatorVC, animated: true)
+                self.delegate?.didCreateDatabase(in: self, database: addedRef)
             },
             error: { [weak self] (fileKeeperError) in
                 Diag.error("Failed to add created file [mesasge: \(fileKeeperError.localizedDescription)]")
@@ -166,81 +225,160 @@ class DatabaseCreatorCoordinator: NSObject {
             }
         )
     }
+    
+    private func showDiagnostics() {
+        let diagnosticsViewerCoordinator = DiagnosticsViewerCoordinator(router: router)
+        diagnosticsViewerCoordinator.dismissHandler = { [weak self] coordinator in
+            self?.removeChildCoordinator(coordinator)
+        }
+        addChildCoordinator(diagnosticsViewerCoordinator)
+        diagnosticsViewerCoordinator.start()
+    }
+    
+    
+    private func showSavingProgress() {
+        databaseCreatorVC.continueButton.isEnabled = false
+        router.showProgressView(
+            title: LString.databaseStatusSaving,
+            allowCancelling: true)
+    }
+    
+    private func hideProgress() {
+        databaseCreatorVC.continueButton.isEnabled = true
+        router.hideProgressView()
+    }
 }
 
 extension DatabaseCreatorCoordinator: DatabaseCreatorDelegate {
     func didPressCancel(in databaseCreatorVC: DatabaseCreatorVC) {
-        if let initialTopController = self.initialTopController {
-            navigationController.popToViewController(initialTopController, animated: true)
-        }
-        delegate?.didPressCancel(in: self)
+        router.pop(viewController: databaseCreatorVC, animated: true)
     }
     
     func didPressContinue(in databaseCreatorVC: DatabaseCreatorVC) {
-        instantiateDatabase(fileName: databaseCreatorVC.databaseFileName)
+        if isPasswordResetWarningShown {
+            instantiateDatabase(fileName: databaseCreatorVC.databaseFileName)
+        } else {
+            isPasswordResetWarningShown = true
+            let alert = UIAlertController(
+                title: LString.titleRememberYourPassword,
+                message: LString.warningRememberYourPassword,
+                preferredStyle: .alert)
+                .addAction(title: LString.actionCancel, style: .cancel, handler: nil)
+                .addAction(title: LString.actionContinue, style: .default) {
+                    [weak self] action in
+                    self?.didPressContinue(in: databaseCreatorVC)
+                }
+            databaseCreatorVC.present(alert, animated: true, completion: nil)
+            return
+        }
     }
     
-    func didPressPickKeyFile(in databaseCreatorVC: DatabaseCreatorVC, popoverSource: UIView) {
-        let keyFileChooser = ChooseKeyFileVC.make(popoverSourceView: popoverSource, delegate: self)
-        navigationController.present(keyFileChooser, animated: true, completion: nil)
+    func didPressErrorDetails(in databaseCreatorVC: DatabaseCreatorVC) {
+        showDiagnostics()
+    }
+    
+    func didPressPickKeyFile(in databaseCreatorVC: DatabaseCreatorVC, at popoverAnchor: PopoverAnchor) {
+        let modalRouter = NavigationRouter.createModal(style: .popover, at: popoverAnchor)
+        let keyFilePickerCoordinator = KeyFilePickerCoordinator(
+            router: modalRouter,
+            addingMode: .import
+        )
+        addChildCoordinator(keyFilePickerCoordinator)
+        keyFilePickerCoordinator.dismissHandler = { [weak self] coordinator in
+            self?.removeChildCoordinator(coordinator)
+        }
+        keyFilePickerCoordinator.delegate = self
+        keyFilePickerCoordinator.start()
+        router.present(modalRouter, animated: true, completion: nil)
+    }
+    
+    func didPressPickHardwareKey(
+        in databaseCreatorVC: DatabaseCreatorVC,
+        at popoverAnchor: PopoverAnchor)
+    {
+        showHardwareKeyPicker(at: popoverAnchor)
     }
 }
 
-extension DatabaseCreatorCoordinator: KeyFileChooserDelegate {
-    func onKeyFileSelected(urlRef: URLReference?) {
-        databaseCreatorVC.keyFile = urlRef
+extension DatabaseCreatorCoordinator: KeyFilePickerCoordinatorDelegate {
+    func didPickKeyFile(in coordinator: KeyFilePickerCoordinator, keyFile: URLReference?) {
+        setKeyFile(keyFile)
+    }
+    
+    func didRemoveOrDeleteKeyFile(in coordinator: KeyFilePickerCoordinator, keyFile: URLReference) {
+        if databaseCreatorVC.keyFile == keyFile {
+            setKeyFile(nil)
+        }
+    }
+
+    func setKeyFile(_ fileRef: URLReference?) {
+        databaseCreatorVC.keyFile = fileRef
         databaseCreatorVC.becomeFirstResponder()
     }
 }
 
 extension DatabaseCreatorCoordinator: DatabaseManagerObserver {
     func databaseManager(willSaveDatabase urlRef: URLReference) {
-        databaseCreatorVC.showProgressView(
-            title: LString.databaseStatusSaving,
-            allowCancelling: true)
+        showSavingProgress()
     }
     
     func databaseManager(progressDidChange progress: ProgressEx) {
-        databaseCreatorVC.updateProgressView(with: progress)
+        router.updateProgressView(with: progress)
     }
     
     func databaseManager(didSaveDatabase urlRef: URLReference) {
         DatabaseManager.shared.removeObserver(self)
-        databaseCreatorVC.hideProgressView()
         DatabaseManager.shared.closeDatabase(
-            completion: { [weak self] in
-                DispatchQueue.main.async { [weak self] in
-                    self?.pickTargetLocation(for: urlRef)
+            clearStoredKey: true,
+            ignoreErrors: false,
+            completion: { [weak self] (error) in
+                guard let self = self else { return }
+                if let error = error {
+                    self.hideProgress()
+                    self.databaseCreatorVC.showErrorAlert(error)
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pickTargetLocation(for: urlRef)
+                    }
                 }
-            },
-            clearStoredKey: true
+            }
         )
     }
     
     func databaseManager(database urlRef: URLReference, isCancelled: Bool) {
         DatabaseManager.shared.removeObserver(self)
         DatabaseManager.shared.abortDatabaseCreation()
-        self.databaseCreatorVC.hideProgressView()
+        hideProgress()
     }
     
-    func databaseManager(database urlRef: URLReference, savingError message: String, reason: String?) {
+    func databaseManager(
+        database urlRef: URLReference,
+        savingError error: Error,
+        data: ByteArray?)
+    {
         DatabaseManager.shared.removeObserver(self)
         DatabaseManager.shared.abortDatabaseCreation()
-        databaseCreatorVC.hideProgressView()
-        if let reason = reason {
-            databaseCreatorVC.setError(message: "\(message)\n\(reason)", animated: true)
-        } else {
-            databaseCreatorVC.setError(message: message, animated: true)
+        hideProgress()
+        
+        guard let localizedError = error as? LocalizedError else {
+            databaseCreatorVC.setError(message: error.localizedDescription, animated: true)
+            return
         }
+        let errorMessageParts = [
+            localizedError.localizedDescription,
+            localizedError.failureReason,
+            localizedError.recoverySuggestion
+        ]
+        let errorMessage = errorMessageParts.compactMap { $0 }.joined(separator: "\n")
+        databaseCreatorVC.setError(message: errorMessage, animated: true)
     }
 }
 
 extension DatabaseCreatorCoordinator: UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        if let initialTopController = self.initialTopController {
-            self.navigationController.popToViewController(initialTopController, animated: false)
-        }
-        self.delegate?.didPressCancel(in: self)
+        hideProgress()
+        
+        router.pop(viewController: databaseCreatorVC, animated: true)
     }
     
     func documentPicker(
@@ -248,6 +386,43 @@ extension DatabaseCreatorCoordinator: UIDocumentPickerDelegate {
         didPickDocumentsAt urls: [URL])
     {
         guard let url = urls.first else { return }
-        addCreatedDatabase(at: url)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            [weak self] in
+            guard let self = self else { return }
+            self.hideProgress()
+            self.addCreatedDatabase(at: url)
+        }
+    }
+}
+
+extension DatabaseCreatorCoordinator: HardwareKeyPickerDelegate {
+    func showHardwareKeyPicker(at popoverAnchor: PopoverAnchor) {
+        let hardwareKeyPicker = HardwareKeyPicker.create(delegate: self)
+        hardwareKeyPicker.modalPresentationStyle = .popover
+        if let popover = hardwareKeyPicker.popoverPresentationController {
+            popoverAnchor.apply(to: popover)
+            popover.delegate = hardwareKeyPicker.dismissablePopoverDelegate
+        }
+        hardwareKeyPicker.key = databaseCreatorVC.yubiKey
+        databaseCreatorVC.present(hardwareKeyPicker, animated: true, completion: nil)
+    }
+
+    func didDismiss(_ picker: HardwareKeyPicker) {
+    }
+    
+    func didSelectKey(yubiKey: YubiKey?, in picker: HardwareKeyPicker) {
+        setYubiKey(yubiKey)
+        databaseCreatorVC.becomeFirstResponder()
+        databaseCreatorVC.setError(message: nil, animated: false)
+    }
+    
+    func setYubiKey(_ yubiKey: YubiKey?) {
+        databaseCreatorVC.yubiKey = yubiKey
+        if let _yubiKey = yubiKey {
+            Diag.info("Hardware key selected [key: \(_yubiKey)]")
+        } else {
+            Diag.info("No hardware key selected")
+        }
     }
 }

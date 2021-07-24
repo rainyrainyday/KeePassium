@@ -51,34 +51,53 @@ public class Settings {
     public static let current = Settings()
     
     public enum Keys: String {
+        case testEnvironment
         case settingsVersion
+        case firstLaunchTimestamp
         
         case filesSortOrder
         case backupFilesVisible
 
         case startupDatabase
+        case autoUnlockStartupDatabase
         case rememberDatabaseKey
+        case rememberDatabaseFinalKey
         case keepKeyFileAssociations
-        case keyFileAssociations
+        case keepHardwareKeyAssociations
+        case hardwareKeyAssociations
 
         case appLockEnabled
         case biometricAppLockEnabled
         case lockAllDatabasesOnFailedPasscode
         case recentUserActivityTimestamp
         case appLockTimeout
+        case lockAppOnLaunch
         case databaseLockTimeout
+        case lockDatabasesOnTimeout
+        
         case clipboardTimeout
+        case universalClipboardEnabled
 
-        case startWithSearch
+        case databaseIconSet
         case groupSortOrder
         case entryListDetail
         case entryViewerPage
+        case hideProtectedFields
+        case collapseNotesField
+        
+        case startWithSearch
+        case searchFieldNames
+        case searchProtectedValues
 
         case backupDatabaseOnSave
         case backupKeepingDuration
+        case excludeBackupFilesFromSystemBackup
         
         case autoFillFinishedOK
         case copyTOTPOnAutoFill
+        case autoFillPerfectMatch
+        
+        case hapticFeedbackEnabled
         
         case passwordGeneratorLength
         case passwordGeneratorIncludeLowerCase
@@ -87,6 +106,9 @@ public class Settings {
         case passwordGeneratorIncludeDigits
         case passwordGeneratorIncludeLookAlike
         case passcodeKeyboardType
+        
+        case hideAppLockSetupReminder
+        case textScale
     }
 
     fileprivate enum Notifications {
@@ -102,11 +124,13 @@ public class Settings {
         }
         
         public static let allValues = [
-            immediately, after3seconds, after15seconds, after30seconds,
+            immediately,
+            after3seconds, after15seconds, after30seconds,
             after1minute, after2minutes, after5minutes]
         
         case never = -1 
         case immediately = 0
+        case after1second = 1 
         case after3seconds = 3
         case after15seconds = 15
         case after30seconds = 30
@@ -122,6 +146,7 @@ public class Settings {
             switch self {
             case .never,
                  .immediately,
+                 .after1second,
                  .after3seconds:
                 return .appMinimized
             default:
@@ -132,9 +157,17 @@ public class Settings {
         public var fullTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Lock Application Timeout' setting. This should be full description. Will be shown as 'Timeouts: Lock Application: Never'")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/fullTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'App Lock: Timeout: Never'")
             case .immediately:
-                return NSLocalizedString("Immediately", comment: "One of the possible values of the 'Lock Application Timeout' setting. This should be full description. Will be shown as 'Timeouts: Lock Database: Immediately'")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/fullTitle] Immediately",
+                    bundle: Bundle.framework,
+                    value: "Immediately",
+                    comment: "An option in Settings. Will be shown as 'App Lock: Timeout: Immediately'")
             default:
                 let formatter = DateComponentsFormatter()
                 formatter.allowedUnits = [.hour, .minute, .second]
@@ -151,9 +184,17 @@ public class Settings {
         public var shortTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Lock Application Timeout' setting. This should be as a short version of 'Never'. Will be shown as 'Timeouts: Lock Application: Never'")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/shortTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'App Lock: Timeout: Never'")
             case .immediately:
-                return NSLocalizedString("Immediately", comment: "One of the possible values of the 'Lock Application Timeout' setting. This should be a short description of 'Immediately'. Will be shown as 'Timeouts: Lock Application: Immediately'")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/shortTitle] Immediately",
+                    bundle: Bundle.framework,
+                    value: "Immediately",
+                    comment: "An option in Settings. Will be shown as 'App Lock: Timeout: Immediately'")
             default:
                 let formatter = DateComponentsFormatter()
                 formatter.allowedUnits = [.hour, .minute, .second]
@@ -170,19 +211,27 @@ public class Settings {
         public var description: String? {
             switch triggerMode {
             case .appMinimized:
-                return NSLocalizedString("After leaving the app", comment: "A description for AppLock timeout trigger 'when the app is minimized'. For example: 'Lock Timeout: 3 seconds (After leaving the app)")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/description] After leaving the app",
+                    bundle: Bundle.framework,
+                    value: "After leaving the app",
+                    comment: "A description/subtitle for Settings/AppLock/Timeout options that trigger when the app is minimized. For example: 'AppLock Timeout: 3 seconds (After leaving the app)")
             case .userIdle:
-                return NSLocalizedString("After last interaction", comment: "A description for AppLock timeout trigger event 'when the user is idle'. For example: 'Lock Timeout: 3 seconds (After last interaction)")
+                return NSLocalizedString(
+                    "[Settings/AppLockTimeout/description] After last interaction",
+                    bundle: Bundle.framework,
+                    value: "After last interaction",
+                    comment: "A description/subtitle for Settings/AppLockTimeout options that trigger when the user has been idle for a while. For example: 'AppLock Timeout: 3 seconds (After last interaction)")
             }
         }
     }
 
-    public enum DatabaseLockTimeout: Int {
+    public enum DatabaseLockTimeout: Int, Comparable {
         public static let allValues = [
             immediately, /*after5seconds, after15seconds, */after30seconds,
             after1minute, after2minutes, after5minutes, after10minutes,
             after30minutes, after1hour, after2hours, after4hours, after8hours,
-            after24hours, never]
+            after24hours, after7days, never]
         case never = -1
         case immediately = 0
         case after5seconds = 5
@@ -198,20 +247,33 @@ public class Settings {
         case after4hours = 14400
         case after8hours = 28800
         case after24hours = 86400
+        case after7days = 604800
 
         public var seconds: Int {
             return self.rawValue
         }
         
+        public static func < (a: DatabaseLockTimeout, b: DatabaseLockTimeout) -> Bool {
+            return a.seconds < b.seconds
+        }
+        
         public var fullTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Database Lock Timeout' setting. This should be full description. Will be shown as 'Timeouts: Lock Database: Never'")
+                return NSLocalizedString(
+                    "[Settings/DatabaseLockTimeout/fullTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'Database Lock: Timeout: Never'")
             case .immediately:
-                return NSLocalizedString("Immediately", comment: "One of the possible values of the 'Database Lock Timeout' setting. This should be full description. Will be shown as 'Timeouts: Lock Database: Immediately'")
+                return NSLocalizedString(
+                    "[Settings/DatabaseLockTimeout/fullTitle] Immediately",
+                    bundle: Bundle.framework,
+                    value: "Immediately",
+                    comment: "An option in Settings. Will be shown as 'Database Lock: Timeout: Immediately'")
             default:
                 let formatter = DateComponentsFormatter()
-                formatter.allowedUnits = [.hour, .minute, .second]
+                formatter.allowedUnits = [.weekOfMonth, .day, .hour, .minute, .second]
                 formatter.collapsesLargestUnit = true
                 formatter.maximumUnitCount = 2
                 formatter.unitsStyle = .full
@@ -225,12 +287,20 @@ public class Settings {
         public var shortTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Database Lock Timeout' setting. This should be as a short version of 'Never'. Will be shown as 'Timeouts: Lock Database: Never'")
+                return NSLocalizedString(
+                    "[Settings/DatabaseLockTimeout/shortTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'Database Lock: Timeout: Never'")
             case .immediately:
-                return NSLocalizedString("Immediately", comment: "One of the possible values of the 'Database Lock Timeout' setting. This should be a short description of 'Immediately'. Will be shown as 'Timeouts: Lock Database: Immediately'")
+                return NSLocalizedString(
+                    "[Settings/DatabaseLockTimeout/shortTitle] Immediately",
+                    bundle: Bundle.framework,
+                    value: "Immediately",
+                    comment: "An option in Settings. Will be shown as 'Database Lock: Timeout: Immediately'")
             default:
                 let formatter = DateComponentsFormatter()
-                formatter.allowedUnits = [.hour, .minute, .second]
+                formatter.allowedUnits = [.weekOfMonth, .day, .hour, .minute, .second]
                 formatter.collapsesLargestUnit = true
                 formatter.maximumUnitCount = 2
                 formatter.unitsStyle = .brief
@@ -244,7 +314,11 @@ public class Settings {
         public var description: String? {
             switch self {
             case .immediately:
-                return NSLocalizedString("When leaving the app", comment: "A description for the 'Close Database: Immediately'.")
+                return NSLocalizedString(
+                    "[Settings/DatabaseLockTimeout/description] When leaving the app",
+                    bundle: Bundle.framework,
+                    value: "When leaving the app",
+                    comment: "A description/subtitle for the 'DatabaseLockTimeout: Immediately'.")
             default:
                 return nil
             }
@@ -273,7 +347,11 @@ public class Settings {
         public var fullTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Clear Clipboard Timeout' setting. This should be full description. Will be shown as 'Clear Clipboard: Never'")
+                return NSLocalizedString(
+                    "[Settings/ClipboardTimeout/fullTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'Clipboard Timeout: Never'")
             default:
                 let formatter = DateComponentsFormatter()
                 formatter.allowedUnits = [.hour, .minute, .second]
@@ -290,7 +368,11 @@ public class Settings {
         public var shortTitle: String {
             switch self {
             case .never:
-                return NSLocalizedString("Never", comment: "One of the possible values of the 'Clear Clipboard Timeout' setting. This should be a short version of 'Never'. Will be shown as 'Clear Clipboard: Never'")
+                return NSLocalizedString(
+                    "[Settings/ClipboardTimeout/shortTitle] Never",
+                    bundle: Bundle.framework,
+                    value: "Never",
+                    comment: "An option in Settings. Will be shown as 'Clipboard Timeout: Never'")
             default:
                 let formatter = DateComponentsFormatter()
                 formatter.allowedUnits = [.hour, .minute, .second]
@@ -308,13 +390,14 @@ public class Settings {
     
     public enum BackupKeepingDuration: Int {
         public static let allValues: [BackupKeepingDuration] = [
-            .forever, _1year, _6months, _4weeks, _1week, _1day, _4hours, _1hour
+            .forever, _1year, _6months, _2months, _4weeks, _1week, _1day, _4hours, _1hour
         ]
         case _1hour = 3600
         case _4hours = 14400
         case _1day = 86400
         case _1week = 604_800
         case _4weeks = 2_419_200
+        case _2months = 5_270_400
         case _6months = 15_552_000
         case _1year = 31_536_000
         case forever
@@ -331,7 +414,11 @@ public class Settings {
         public var shortTitle: String {
             switch self {
             case .forever:
-                return NSLocalizedString("Forever", comment: "One of the possible values of the 'Keep Backup Files (Duration)' setting. Please keep it short. Will be shown as 'Keep Backup Files: Forever'")
+                return NSLocalizedString(
+                    "[Settings/BackupKeepingDuration/shortTitle] Forever",
+                    bundle: Bundle.framework,
+                    value: "Forever",
+                    comment: "An option in Settings. Please keep it short. Will be shown as 'Keep Backup Files: Forever'")
             default:
                 let formatter = DateComponentsFormatter()
                 formatter.allowedUnits = [.year, .month, .day, .hour]
@@ -361,27 +448,48 @@ public class Settings {
         case notes
         case lastModifiedDate
         
-        public var shortTitle: String {
-            return longTitle
-        }
         public var longTitle: String {
             switch self {
             case .none:
-                return NSLocalizedString("None", comment: "One of the possible values of the 'Entry List Details' setting. Will be shown as 'Entry List Details   None', meaningin that no entry details will be shown in any lists.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] None",
+                    bundle: Bundle.framework,
+                    value: "None",
+                    comment: "An option in Group Viewer settings. Will be shown as 'Entry Subtitle: None', meanining that no entry details will be shown in any lists.")
             case .userName:
-                return NSLocalizedString("User Name", comment: "One of the possible values of the 'Entry List Details' setting; it refers to login information rather than person name. Will be shown as 'Entry List Details   User Name'.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] User Name",
+                    bundle: Bundle.framework,
+                    value: "User Name",
+                    comment: "An option in Group Viewer settings. It refers to login information rather than person's name. Will be shown as 'Entry Subtitle: User Name'.")
             case .password:
-                return NSLocalizedString("Password", comment: "One of the possible values of the 'Entry List Details' setting. Will be shown as 'Entry List Details   Password'.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] Password",
+                    bundle: Bundle.framework,
+                    value: "Password",
+                    comment: "An option in Group Viewer settings. Will be shown as 'Entry Subtitle: Password'.")
             case .url:
-                return NSLocalizedString("URL", comment: "One of the possible values of the 'Entry List Details' setting. URL stands for 'internet address' or 'internet link'. Will be shown as 'Entry List Details   URL'.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] URL",
+                    bundle: Bundle.framework,
+                    value: "URL",
+                    comment: "An option in Group Viewer settings. Will be shown as 'Entry Subtitle: URL'.")
             case .notes:
-                return NSLocalizedString("Notes", comment: "One of the possible values of the 'Entry List Details' setting; it refers to comments or additional text information contained in an entry. Will be shown as 'Entry List Details   Notes'.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] Notes",
+                    bundle: Bundle.framework,
+                    value: "Notes",
+                    comment: "An option in Group Viewer settings. Refers to comments/notes field of the entry. Will be shown as 'Entry Subtitle: Notes'.")
             case .lastModifiedDate:
-                return NSLocalizedString("Last Modified Date", comment: "One of the possible values of the 'Entry List Details' setting; it referst fo the most recent time when the entry was modified. Will be shown as 'Entry List Details   Last Modified Time'.")
+                return NSLocalizedString(
+                    "[Settings/EntryListDetail/longTitle] Last Modified Date",
+                    bundle: Bundle.framework,
+                    value: "Last Modified Date",
+                    comment: "An option in Group Viewer settings. Refers fo the most recent time when the entry was modified. Will be shown as 'Entry Subtitle: Last Modified Date'.")
             }
         }
     }
-
+    
     public enum GroupSortOrder: Int {
         public static let allValues = [
             noSorting,
@@ -400,37 +508,47 @@ public class Settings {
         public var longTitle: String {
             switch self {
             case .noSorting:
-                return NSLocalizedString("No Sorting", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: No Sorting'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] No Sorting",
+                    bundle: Bundle.framework,
+                    value: "No Sorting",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: No Sorting'")
             case .nameAsc:
-                return NSLocalizedString("By Title (A..Z)", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Title (A..Z)'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Title (A..Z)",
+                    bundle: Bundle.framework,
+                    value: "By Title (A..Z)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Title (A..Z)'")
             case .nameDesc:
-                return NSLocalizedString("By Title (Z..A)", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Title (Z..A)'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Title (Z..A)",
+                    bundle: Bundle.framework,
+                    value: "By Title (Z..A)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Title (Z..A)'")
             case .creationTimeAsc:
-                return NSLocalizedString("By Creation Date (Old..New)", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Creation Date (Old..New)'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Creation Date (Old..New)",
+                    bundle: Bundle.framework,
+                    value: "By Creation Date (Old..New)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Creation Date (Old..New)'")
             case .creationTimeDesc:
-                return NSLocalizedString("By Creation Date (New..Old)", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Creation Date (New..Old)'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Creation Date (New..Old)",
+                    bundle: Bundle.framework,
+                    value: "By Creation Date (New..Old)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Creation Date (New..Old)'")
             case .modificationTimeAsc:
-                return NSLocalizedString("By Modification Date (Old..New)", comment: "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Modification Date (Old..New)'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Modification Date (Old..New)",
+                    bundle: Bundle.framework,
+                    value: "By Modification Date (Old..New)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Modification Date (Old..New)'")
             case .modificationTimeDesc:
-                return NSLocalizedString("By Modification Date (New..Old)", comment:  "One of possible values of the 'Sort Groups By' setting (full title). Example: 'Sort Groups: By Modification Date (New..Old)'")
-            }
-        }
-        public var shortTitle: String {
-            switch self {
-            case .noSorting:
-                return NSLocalizedString("None", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'No Sorting'). Example: 'Sort Groups: None'")
-            case .nameAsc:
-                return NSLocalizedString("A..Z", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'Title (A..Z)'). Example: 'Sort Groups: A..Z'")
-            case .nameDesc:
-                return NSLocalizedString("Z..A", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'Title (Z..A)'). Example: 'Sort Groups: Z..A'")
-            case .creationTimeAsc:
-                return NSLocalizedString("Creation Date", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'By Creation Date (Old..New)'). Example: 'Sort Groups: Creation Date'")
-            case .creationTimeDesc:
-                return NSLocalizedString("Creation Date", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'By Creation Date (New..Old)'). Example: 'Sort Groups: Creation Date'")
-            case .modificationTimeAsc:
-                return NSLocalizedString("Last Modified", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'By Modification Date (Old..New)'). Example: 'Sort Groups: Last Modified'")
-            case .modificationTimeDesc:
-                return NSLocalizedString("Last Modified", comment: "One of possible values of the 'Sort Groups By' setting (short title for 'By Modification Date (New..Old)'). Example: 'Sort Groups: Last Modified'")
+                return NSLocalizedString(
+                    "[GroupSortOrder/longTitle] By Modification Date (New..Old)",
+                    bundle: Bundle.framework,
+                    value: "By Modification Date (New..Old)",
+                    comment: "An option in Group Viewer settings. Example: 'Sort Order: By Modification Date (New..Old)'")
             }
         }
         public func compare(_ group1: Group, _ group2: Group) -> Bool {
@@ -456,9 +574,9 @@ public class Settings {
             case .noSorting:
                 return false
             case .nameAsc:
-                return entry1.title.localizedStandardCompare(entry2.title) == .orderedAscending
+                return entry1.resolvedTitle.localizedStandardCompare(entry2.resolvedTitle) == .orderedAscending
             case .nameDesc:
-                return entry1.title.localizedStandardCompare(entry2.title) == .orderedDescending
+                return entry1.resolvedTitle.localizedStandardCompare(entry2.resolvedTitle) == .orderedDescending
             case .creationTimeAsc:
                 return entry1.creationTime.compare(entry2.creationTime) == .orderedAscending
             case .creationTimeDesc:
@@ -489,19 +607,47 @@ public class Settings {
         public var longTitle: String {
             switch self {
             case .noSorting:
-                return NSLocalizedString("No Sorting", comment: "A settings option which defines sorting of items in lists. Example: 'Sort order   No Sorting'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] No Sorting",
+                    bundle: Bundle.framework,
+                    value: "No Sorting",
+                    comment: "A sorting option for a list of files. Example: 'Sort Order: No Sorting'")
             case .nameAsc:
-                return NSLocalizedString("Name (A..Z)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Name (A..Z)'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Name (A..Z)",
+                    bundle: Bundle.framework,
+                    value: "Name (A..Z)",
+                    comment: "A sorting option for a list of files, by file name. Example: 'Sort Order: Name (A..Z)'")
             case .nameDesc:
-                return NSLocalizedString("Name (Z..A)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Name (Z..A)'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Name (Z..A)",
+                    bundle: Bundle.framework,
+                    value: "Name (Z..A)",
+                    comment: "A sorting option for a list of files, by file name. Example: 'Sort Order: Name (Z..A)'")
             case .creationTimeAsc:
-                return NSLocalizedString("Date Created (Oldest First)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Date Created (Oldest First)")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Creation Date (Oldest First)",
+                    bundle: Bundle.framework,
+                    value: "Creation Date (Oldest First)",
+                    comment: "A sorting option for a list of files, by file creation date. Example: 'Sort Order: Creation Date (Oldest First)'")
             case .creationTimeDesc:
-                return NSLocalizedString("Date Created (Recent First)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Date Created (Recent First)'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Creation Date (Recent First)",
+                    bundle: Bundle.framework,
+                    value: "Creation Date (Recent First)",
+                    comment: "A sorting option for a list of files, by file creation date. Example: 'Sort Order: Creation Date (Recent First)'")
             case .modificationTimeAsc:
-                return NSLocalizedString("Date Modified (Oldest First)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Date Modified (Oldest First)'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Modification Date (Oldest First)",
+                    bundle: Bundle.framework,
+                    value: "Modification Date (Oldest First)",
+                    comment: "A sorting option for a list of files, by file's last modification date. Example: 'Sort Order: Modification Date (Oldest First)'")
             case .modificationTimeDesc:
-                return NSLocalizedString("Date Modified (Recent First)", comment: "One of the possible values of the 'File Sort Order' setting. Will be displayed as 'File Sort Order: Date Modified (Recent First)'")
+                return NSLocalizedString(
+                    "[FilesSortOrder/longTitle] Modification Date (Recent First)",
+                    bundle: Bundle.framework,
+                    value: "Modification Date (Recent First)",
+                    comment: "A sorting option for a list of files, by file's last modification date. Example: 'Sort Order: Modification Date (Recent First)'")
             }
         }
 
@@ -510,26 +656,46 @@ public class Settings {
             case .noSorting:
                 return false
             case .nameAsc:
-                return lhs.info.fileName.localizedCaseInsensitiveCompare(rhs.info.fileName) == .orderedAscending
+                return compareFileNames(lhs, rhs, criteria: .orderedAscending)
             case .nameDesc:
-                return lhs.info.fileName.localizedCaseInsensitiveCompare(rhs.info.fileName) == .orderedDescending
+                return compareFileNames(lhs, rhs, criteria: .orderedDescending)
             case .creationTimeAsc:
-                guard let date1 = lhs.info.creationDate,
-                    let date2 = rhs.info.creationDate else { return false }
-                return date1.compare(date2) == .orderedAscending
+                return compareCreationTimes(lhs, rhs, criteria: .orderedAscending)
             case .creationTimeDesc:
-                guard let date1 = lhs.info.creationDate,
-                    let date2 = rhs.info.creationDate else { return false }
-                return date1.compare(date2) == .orderedDescending
+                return compareCreationTimes(lhs, rhs, criteria: .orderedDescending)
             case .modificationTimeAsc:
-                guard let date1 = lhs.info.modificationDate,
-                    let date2 = rhs.info.modificationDate else { return false }
-                return date1.compare(date2) == .orderedAscending
+                return compareModificationTimes(lhs, rhs, criteria: .orderedAscending)
             case .modificationTimeDesc:
-                guard let date1 = lhs.info.modificationDate,
-                    let date2 = rhs.info.modificationDate else { return false }
-                return date1.compare(date2) == .orderedDescending
+                return compareModificationTimes(lhs, rhs, criteria: .orderedDescending)
             }
+        }
+        
+        private func compareFileNames(_ lhs: URLReference, _ rhs: URLReference, criteria: ComparisonResult) -> Bool {
+            let lhsInfo = lhs.getCachedInfoSync(canFetch: false)
+            guard let lhsName = lhsInfo?.fileName ?? lhs.url?.lastPathComponent else {
+                return false
+            }
+            let rhsInfo = rhs.getCachedInfoSync(canFetch: false)
+            guard let rhsName = rhsInfo?.fileName ?? rhs.url?.lastPathComponent else {
+                return true
+            }
+            return lhsName.localizedCaseInsensitiveCompare(rhsName) == criteria
+        }
+        
+        private func compareCreationTimes(_ lhs: URLReference, _ rhs: URLReference, criteria: ComparisonResult) -> Bool {
+            guard let lhsInfo = lhs.getCachedInfoSync(canFetch: false) else { return false }
+            guard let rhsInfo = rhs.getCachedInfoSync(canFetch: false) else { return true }
+            guard let lhsDate = lhsInfo.creationDate else { return true }
+            guard let rhsDate = rhsInfo.creationDate else { return false }
+            return lhsDate.compare(rhsDate) == criteria
+        }
+        
+        private func compareModificationTimes(_ lhs: URLReference, _ rhs: URLReference, criteria: ComparisonResult) -> Bool {
+            guard let lhsInfo = lhs.getCachedInfoSync(canFetch: false) else { return false }
+            guard let rhsInfo = rhs.getCachedInfoSync(canFetch: false) else { return true }
+            guard let lhsDate = lhsInfo.modificationDate else { return true }
+            guard let rhsDate = rhsInfo.modificationDate else { return false }
+            return lhsDate.compare(rhsDate) == criteria
         }
     }
     
@@ -540,13 +706,23 @@ public class Settings {
         public var title: String {
             switch self {
             case .numeric:
-                return NSLocalizedString("Numeric", comment: "Type of keyboard to show for App Lock passcode: digits-only.")
+                return NSLocalizedString(
+                    "[AppLock/Passcode/KeyboardType/title] Numeric",
+                    bundle: Bundle.framework,
+                    value: "Numeric",
+                    comment: "Type of keyboard to show for App Lock passcode: digits only (PIN code).")
             case .alphanumeric:
-                return NSLocalizedString("Alphanumeric", comment: "Type of keyboard to show for App Lock passcode: letters and digits.")
+                return NSLocalizedString(
+                    "[AppLock/Passcode/KeyboardType/title] Alphanumeric",
+                    bundle: Bundle.framework,
+                    value: "Alphanumeric",
+                    comment: "Type of keyboard to show for App Lock passcode: letters and digits.")
             }
         }
     }
     
+    
+    public private(set) var isTestEnvironment: Bool
     
     public var isFirstLaunch: Bool { return _isFirstLaunch }
     
@@ -566,6 +742,31 @@ public class Settings {
         }
     }
     
+    public var firstLaunchTimestamp: Date {
+        get {
+            if let storedTimestamp = UserDefaults.appGroupShared
+                .object(forKey: Keys.firstLaunchTimestamp.rawValue)
+                as? Date
+            {
+                return storedTimestamp
+            } else {
+                let firstLaunchTimestamp = Date.now
+                UserDefaults.appGroupShared.set(
+                    firstLaunchTimestamp,
+                    forKey: Keys.firstLaunchTimestamp.rawValue)
+                return firstLaunchTimestamp
+            }
+        }
+    }
+    
+#if DEBUG
+    public func resetFirstLaunchTimestampToNow() {
+        UserDefaults.appGroupShared.set(
+            Date.now,
+            forKey: Keys.firstLaunchTimestamp.rawValue)
+    }
+#endif
+
     
     public var filesSortOrder: FilesSortOrder {
         get {
@@ -621,6 +822,21 @@ public class Settings {
         }
     }
     
+    public var isAutoUnlockStartupDatabase: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.autoUnlockStartupDatabase.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isAutoUnlockStartupDatabase,
+                newValue: newValue,
+                key: .autoUnlockStartupDatabase)
+        }
+    }
+    
     public var isRememberDatabaseKey: Bool {
         get {
             let stored = UserDefaults.appGroupShared
@@ -635,6 +851,22 @@ public class Settings {
                 key: .rememberDatabaseKey)
         }
     }
+
+    public var isRememberDatabaseFinalKey: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.rememberDatabaseFinalKey.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isRememberDatabaseFinalKey,
+                newValue: newValue,
+                key: .rememberDatabaseFinalKey)
+        }
+    }
+
     
     public var isKeepKeyFileAssociations: Bool {
         get {
@@ -648,7 +880,7 @@ public class Settings {
             let oldValue = isKeepKeyFileAssociations
             UserDefaults.appGroupShared.set(newValue, forKey: Keys.keepKeyFileAssociations.rawValue)
             if !newValue {
-                removeAllKeyFileAssociations()
+                DatabaseSettingsManager.shared.forgetAllKeyFiles()
             }
             if newValue != oldValue {
                 postChangeNotification(changedKey: Keys.keepKeyFileAssociations)
@@ -656,72 +888,36 @@ public class Settings {
         }
     }
     
-    public func getKeyFileForDatabase(databaseRef: URLReference) -> URLReference? {
-        guard let db2key = UserDefaults.appGroupShared
-            .dictionary(forKey: Keys.keyFileAssociations.rawValue) else { return nil }
-        
-        let databaseID = databaseRef.info.fileName
-        if let keyFileRefData = db2key[databaseID] as? Data {
-            return URLReference.deserialize(from: keyFileRefData)
-        } else { 
-            return nil
-        }
-    }
-    
-    public func setKeyFileForDatabase(databaseRef: URLReference, keyFileRef: URLReference?) {
-        guard isKeepKeyFileAssociations else { return }
-        var db2key: Dictionary<String, Data> = [:]
-        if let storedDict = UserDefaults.appGroupShared
-            .dictionary(forKey: Keys.keyFileAssociations.rawValue)
-        {
-            for (storedDatabaseID, storedKeyFileRefData) in storedDict {
-                guard let storedKeyFileRefData = storedKeyFileRefData as? Data else { continue }
-                db2key[storedDatabaseID] = storedKeyFileRefData
+    public var isKeepHardwareKeyAssociations: Bool {
+        get {
+            if contains(key: Keys.keepHardwareKeyAssociations) {
+                return UserDefaults.appGroupShared.bool(forKey: Keys.keepHardwareKeyAssociations.rawValue)
+            } else {
+                return true
             }
         }
-        
-        let databaseID = databaseRef.info.fileName
-        db2key[databaseID] = keyFileRef?.serialize()
-        UserDefaults.appGroupShared.setValue(db2key, forKey: Keys.keyFileAssociations.rawValue)
-        postChangeNotification(changedKey: Keys.keyFileAssociations)
-    }
-    
-    public func forgetKeyFile(_ keyFileRef: URLReference) {
-        guard isKeepKeyFileAssociations else { return }
-        var db2key = Dictionary<String, Data>()
-        if let storedDict = UserDefaults.appGroupShared
-            .dictionary(forKey: Keys.keyFileAssociations.rawValue)
-        {
-            for (storedDatabaseID, storedKeyFileRefData) in storedDict {
-                guard let storedKeyFileRefData = storedKeyFileRefData as? Data else { continue }
-                if keyFileRef != URLReference.deserialize(from: storedKeyFileRefData) {
-                    db2key[storedDatabaseID] = storedKeyFileRefData
-                }
+        set {
+            let oldValue = isKeepHardwareKeyAssociations
+            UserDefaults.appGroupShared.set(newValue, forKey: Keys.keepHardwareKeyAssociations.rawValue)
+            if !newValue {
+                DatabaseSettingsManager.shared.forgetAllHardwareKeys()
+            }
+            if newValue != oldValue {
+                postChangeNotification(changedKey: Keys.keepHardwareKeyAssociations)
             }
         }
-        UserDefaults.appGroupShared.setValue(db2key, forKey: Keys.keyFileAssociations.rawValue)
     }
     
-    public func removeAllKeyFileAssociations() {
-        UserDefaults.appGroupShared.setValue(
-            Dictionary<String, Data>(),
-            forKey: Keys.keyFileAssociations.rawValue)
-    }
-
     
     public var isAppLockEnabled: Bool {
         get {
-            let stored = UserDefaults.appGroupShared
-                .object(forKey: Keys.appLockEnabled.rawValue)
-                as? Bool
-            return stored ?? false
+            let hasPasscode = try? Keychain.shared.isAppPasscodeSet() 
+            return hasPasscode ?? false
         }
-        set {
-            updateAndNotify(
-                oldValue: isAppLockEnabled,
-                newValue: newValue,
-                key: .appLockEnabled)
-        }
+    }
+    
+    internal func notifyAppLockEnabledChanged() {
+        postChangeNotification(changedKey: .appLockEnabled)
     }
     
     public var isBiometricAppLockEnabled: Bool {
@@ -779,15 +975,25 @@ public class Settings {
         }
     }
     
+    public var isAffectedByAutoFillFaceIDLoop_iOS_13_1_3 = false
+    
+    public func maybeFixAutoFillFaceIDLoop_iOS_13_1_3(_ timeout: AppLockTimeout) -> AppLockTimeout {
+        if isAffectedByAutoFillFaceIDLoop_iOS_13_1_3 && timeout == .immediately {
+            return .after1second
+        } else {
+            return timeout
+        }
+    }
+    
     public var appLockTimeout: AppLockTimeout {
         get {
             if let rawValue = UserDefaults.appGroupShared
                 .object(forKey: Keys.appLockTimeout.rawValue) as? Int,
                 let timeout = AppLockTimeout(rawValue: rawValue)
             {
-                return timeout
+                return maybeFixAutoFillFaceIDLoop_iOS_13_1_3(timeout)
             }
-            return AppLockTimeout.immediately
+            return maybeFixAutoFillFaceIDLoop_iOS_13_1_3(AppLockTimeout.immediately)
         }
         set {
             let oldValue = appLockTimeout
@@ -795,6 +1001,21 @@ public class Settings {
             if newValue != oldValue {
                 postChangeNotification(changedKey: Keys.appLockTimeout)
             }
+        }
+    }
+    
+    public var isLockAppOnLaunch: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.lockAppOnLaunch.rawValue)
+                as? Bool
+            return stored ?? false
+        }
+        set {
+            updateAndNotify(
+                oldValue: isLockAppOnLaunch,
+                newValue: newValue,
+                key: .lockAppOnLaunch)
         }
     }
     
@@ -806,7 +1027,7 @@ public class Settings {
             {
                 return timeout
             }
-            return DatabaseLockTimeout.after1hour
+            return DatabaseLockTimeout.never
         }
         set {
             let oldValue = databaseLockTimeout
@@ -818,6 +1039,22 @@ public class Settings {
             }
         }
     }
+    
+    public var isLockDatabasesOnTimeout: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.lockDatabasesOnTimeout.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isLockDatabasesOnTimeout,
+                newValue: newValue,
+                key: .lockDatabasesOnTimeout)
+        }
+    }
+    
     
     public var clipboardTimeout: ClipboardTimeout {
         get {
@@ -838,19 +1075,34 @@ public class Settings {
         }
     }
     
-    
-    public var isStartWithSearch: Bool {
+    public var isUniversalClipboardEnabled: Bool {
         get {
             let stored = UserDefaults.appGroupShared
-                .object(forKey: Keys.startWithSearch.rawValue)
+                .object(forKey: Keys.universalClipboardEnabled.rawValue)
                 as? Bool
             return stored ?? false
         }
         set {
             updateAndNotify(
-                oldValue: isStartWithSearch,
+                oldValue: isUniversalClipboardEnabled,
                 newValue: newValue,
-                key: .startWithSearch)
+                key: .universalClipboardEnabled)
+        }
+    }
+    
+    
+    public var databaseIconSet: DatabaseIconSet {
+        get {
+            if let rawValue = UserDefaults.appGroupShared
+                .object(forKey: Keys.databaseIconSet.rawValue) as? Int,
+               let iconSet = DatabaseIconSet(rawValue: rawValue)
+            {
+                return iconSet
+            }
+            return DatabaseIconSet.keepassium
+        }
+        set {
+            updateAndNotify(oldValue: databaseIconSet.rawValue, newValue: newValue.rawValue, key: .databaseIconSet)
         }
     }
     
@@ -906,7 +1158,87 @@ public class Settings {
         }
     }
     
+    public var isHideProtectedFields: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.hideProtectedFields.rawValue) as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isHideProtectedFields,
+                newValue: newValue,
+                key: Keys.hideProtectedFields)
+        }
+    }
     
+    public var isCollapseNotesField: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.collapseNotesField.rawValue) as? Bool
+            return stored ?? false
+        }
+        set {
+            updateAndNotify(
+                oldValue: isCollapseNotesField,
+                newValue: newValue,
+                key: Keys.collapseNotesField)
+        }
+    }
+    
+    
+    public var isStartWithSearch: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.startWithSearch.rawValue)
+                as? Bool
+            return stored ?? false
+        }
+        set {
+            updateAndNotify(
+                oldValue: isStartWithSearch,
+                newValue: newValue,
+                key: .startWithSearch)
+        }
+    }
+
+    public var isSearchFieldNames: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.searchFieldNames.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isSearchFieldNames,
+                newValue: newValue,
+                key: .searchFieldNames)
+        }
+    }
+    
+    public var isSearchProtectedValues: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.searchProtectedValues.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isSearchProtectedValues,
+                newValue: newValue,
+                key: .searchProtectedValues)
+        }
+    }
+    
+
+    public var isBackupDatabaseOnLoad: Bool {
+        get {
+            return isBackupDatabaseOnSave
+        }
+    }
+
     public var isBackupDatabaseOnSave: Bool {
         get {
             let stored = UserDefaults.appGroupShared
@@ -930,7 +1262,7 @@ public class Settings {
             {
                 return timeout
             }
-            return BackupKeepingDuration.forever
+            return BackupKeepingDuration._2months
         }
         set {
             let oldValue = backupKeepingDuration
@@ -940,6 +1272,21 @@ public class Settings {
             if newValue != oldValue {
                 postChangeNotification(changedKey: Keys.backupKeepingDuration)
             }
+        }
+    }
+    
+    public var isExcludeBackupFilesFromSystemBackup: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.excludeBackupFilesFromSystemBackup.rawValue)
+                as? Bool
+            return stored ?? false
+        }
+        set {
+            updateAndNotify(
+                oldValue: isExcludeBackupFilesFromSystemBackup,
+                newValue: newValue,
+                key: .excludeBackupFilesFromSystemBackup)
         }
     }
     
@@ -976,6 +1323,73 @@ public class Settings {
         }
     }
 
+    public var autoFillPerfectMatch: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.autoFillPerfectMatch.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: autoFillPerfectMatch,
+                newValue: newValue,
+                key: .autoFillPerfectMatch)
+        }
+    }
+
+    
+    public var isHapticFeedbackEnabled: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.hapticFeedbackEnabled.rawValue)
+                as? Bool
+            return stored ?? true
+        }
+        set {
+            updateAndNotify(
+                oldValue: isHapticFeedbackEnabled,
+                newValue: newValue,
+                key: .hapticFeedbackEnabled)
+        }
+    }
+
+    public var isHideAppLockSetupReminder: Bool {
+        get {
+            let stored = UserDefaults.appGroupShared
+                .object(forKey: Keys.hideAppLockSetupReminder.rawValue)
+                as? Bool
+            return stored ?? false
+        }
+        set {
+            updateAndNotify(
+                oldValue: isHideAppLockSetupReminder,
+                newValue: newValue,
+                key: .hideAppLockSetupReminder)
+        }
+    }
+
+    public let textScaleAllowedRange: ClosedRange<CGFloat> = 0.5...2.0
+    
+    public var textScale: CGFloat {
+        get {
+            let storedValueOrNil = UserDefaults.appGroupShared
+                .object(forKey: Keys.textScale.rawValue)
+                as? CGFloat
+            if let value = storedValueOrNil {
+                return value.clamped(to: textScaleAllowedRange)
+            } else {
+                return 1.0
+            }
+        }
+        set {
+            updateAndNotify(
+                oldValue: textScale,
+                newValue: newValue.clamped(to: textScaleAllowedRange),
+                key: .textScale)
+        }
+    }
+    
     
     public var passwordGeneratorLength: Int {
         get {
@@ -1084,6 +1498,20 @@ public class Settings {
     
     private var _isFirstLaunch: Bool
     private init() {
+        #if DEBUG
+        isTestEnvironment = true
+        #else
+        if AppGroup.isMainApp {
+            let lastPathComp = Bundle.main.appStoreReceiptURL?.lastPathComponent
+            isTestEnvironment = lastPathComp == "sandboxReceipt"
+            UserDefaults.appGroupShared.set(isTestEnvironment, forKey: Keys.testEnvironment.rawValue)
+        } else {
+            isTestEnvironment = UserDefaults.appGroupShared
+                .object(forKey: Keys.testEnvironment.rawValue) as? Bool
+                ?? false
+        }
+        #endif
+        
         let versionInfo = UserDefaults.appGroupShared
             .object(forKey: Keys.settingsVersion.rawValue) as? Int
         _isFirstLaunch = (versionInfo == nil)
@@ -1097,7 +1525,7 @@ public class Settings {
         }
     }
 
-    private func updateAndNotify(oldValue: Int, newValue: Int, key: Keys) {
+    private func updateAndNotify<T: SignedNumeric>(oldValue: T, newValue: T, key: Keys) {
         UserDefaults.appGroupShared.set(newValue, forKey: key.rawValue)
         if newValue != oldValue {
             postChangeNotification(changedKey: key)

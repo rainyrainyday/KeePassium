@@ -19,6 +19,9 @@ protocol ViewableField: class {
     var visibleName: String { get }
     
     var value: String? { get }
+    var resolvedValue: String? { get }
+    var decoratedValue: String? { get }
+    
     var isProtected: Bool { get }
     
     var isEditable: Bool { get }
@@ -29,6 +32,7 @@ protocol ViewableField: class {
     
     var isValueHidden: Bool { get set }
 
+    var isHeightConstrained: Bool { get set }
 }
 
 extension ViewableField {
@@ -54,11 +58,15 @@ class BasicViewableField: ViewableField {
     
     var internalName: String { return field?.name ?? "" }
     var value: String? { return field?.value }
+    var resolvedValue: String? { return field?.resolvedValue }
+    var decoratedValue: String? { return field?.premiumDecoratedValue }
     var isProtected: Bool { return field?.isProtected ?? false }
     var isFixed: Bool { return field?.isStandardField ?? false }
 
     var isValueHidden: Bool
-
+    
+    var isHeightConstrained: Bool
+    
     var isEditable: Bool { return true }
     
     convenience init(field: EntryField, isValueHidden: Bool) {
@@ -68,6 +76,7 @@ class BasicViewableField: ViewableField {
     init(fieldOrNil field: EntryField?, isValueHidden: Bool) {
         self.field = field
         self.isValueHidden = isValueHidden
+        self.isHeightConstrained = true
     }
 }
 
@@ -93,6 +102,13 @@ class TOTPViewableField: DynamicViewableField {
     override var value: String {
         return totpGenerator?.generate() ?? ""
     }
+    override var resolvedValue: String? {
+        return value
+    }
+    override var decoratedValue: String? {
+        return value
+    }
+    
     var elapsedTimeFraction: Float? {
         return totpGenerator?.elapsedTimeFraction
     }
@@ -132,8 +148,7 @@ class ViewableEntryFieldFactory {
                 continue
             }
             
-            let isHidden = field.isProtected || field.name == EntryField.password
-            let viewableField = BasicViewableField(field: field, isValueHidden: isHidden)
+            let viewableField = makeOne(field: field)
             result.append(viewableField)
         }
         
@@ -143,6 +158,16 @@ class ViewableEntryFieldFactory {
             result.append(TOTPViewableField(fields: entry.fields))
         }
         
+        return result
+    }
+    
+    static private func makeOne(field: EntryField) -> ViewableField {
+        let isHidden = field.isProtected || field.name == EntryField.password
+        let result = BasicViewableField(field: field, isValueHidden: isHidden)
+        
+        if field.name == EntryField.notes {
+            result.isHeightConstrained = Settings.current.isCollapseNotesField
+        }
         return result
     }
 }

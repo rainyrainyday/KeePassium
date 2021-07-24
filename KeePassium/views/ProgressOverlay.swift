@@ -11,6 +11,8 @@ import KeePassiumLib
 
 @IBDesignable
 class ProgressOverlay: UIView {
+    typealias UnresponsiveCancelHandler = () -> ()
+    
     public var title: String? { 
         didSet { statusLabel.text = title }
     }
@@ -24,11 +26,33 @@ class ProgressOverlay: UIView {
         }
     }
     
+    public var isAnimating: Bool {
+        get { return spinner.isAnimating }
+        set {
+            guard newValue != isAnimating else { return }
+            if newValue {
+                spinner.startAnimating()
+            } else {
+                spinner.stopAnimating()
+            }
+            updateSpinner()
+        }
+    }
+    
+    public var unresponsiveCancelHandler: UnresponsiveCancelHandler? 
+    
+    private var cancelPressCounter = 0
+    private let cancelCountConsideredUnresponsive = 3
+    
+    private var spinner: UIActivityIndicatorView!
     private var statusLabel: UILabel!
     private var percentLabel: UILabel!
     private var progressView: UIProgressView!
     private var cancelButton: UIButton!
     private weak var progress: ProgressEx?
+    
+    private var animatingStatusConstraint: NSLayoutConstraint!
+    private var staticStatusConstraint: NSLayoutConstraint!
     
     required init?(coder aDecoder: NSCoder) {
         fatalError("ProgressOverlay.aDecoder not implemented")
@@ -46,6 +70,12 @@ class ProgressOverlay: UIView {
         } else {
             parent.addSubview(overlay)
         }
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.topAnchor.constraint(equalTo: parent.topAnchor, constant: 0).isActive = true
+        overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: 0).isActive = true
+        overlay.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 0).isActive = true
+        overlay.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: 0).isActive = true
+        parent.layoutSubviews()
         return overlay
     }
     
@@ -53,6 +83,7 @@ class ProgressOverlay: UIView {
         super.init(frame: frame)
         setupViews()
         setupLayout()
+        updateSpinner()
         
         translatesAutoresizingMaskIntoConstraints = true
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -63,7 +94,7 @@ class ProgressOverlay: UIView {
         UIView.animate(
             withDuration: 0.3,
             delay: 0,
-            options: .curveEaseOut,
+            options: [.curveEaseOut, .beginFromCurrentState],
             animations: {
                 self.alpha = 0.0
             },
@@ -71,7 +102,17 @@ class ProgressOverlay: UIView {
     }
     
     private func setupViews() {
-        backgroundColor = UIColor.groupTableViewBackground
+        if #available(iOS 13, *) {
+            backgroundColor = UIColor.systemGroupedBackground
+            spinner = UIActivityIndicatorView(style: .medium)
+        } else {
+            backgroundColor = UIColor.groupTableViewBackground
+            spinner = UIActivityIndicatorView(style: .gray)
+        }
+        spinner.hidesWhenStopped = false
+        spinner.isHidden = false
+        spinner.alpha = 0.0
+        addSubview(spinner)
 
         statusLabel = UILabel()
         statusLabel.text = ""
@@ -108,34 +149,64 @@ class ProgressOverlay: UIView {
         progressView.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 0).isActive = true
         progressView.heightAnchor.constraint(equalToConstant: 2.0).isActive = true
         
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.leftAnchor.constraint(equalTo: progressView.leftAnchor, constant: 0).isActive = true
-        statusLabel.bottomAnchor.constraint(equalTo: progressView.topAnchor, constant: -8.0).isActive = true
-        statusLabel.rightAnchor.constraint(lessThanOrEqualTo: progressView.rightAnchor, constant: 0).isActive = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.leadingAnchor.constraint(equalTo: progressView.leadingAnchor, constant: 0).isActive = true
+        spinner.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor).isActive = true
 
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.leftAnchor.constraint(equalTo: progressView.leftAnchor, constant: 0).isActive = true
         statusLabel.bottomAnchor.constraint(equalTo: progressView.topAnchor, constant: -8.0).isActive = true
-        statusLabel.rightAnchor.constraint(lessThanOrEqualTo: percentLabel.leftAnchor, constant: 8.0).isActive = true
+        statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: percentLabel.leadingAnchor, constant: 8.0).isActive = true
+        
+        staticStatusConstraint = statusLabel.leadingAnchor.constraint(equalTo: progressView.leadingAnchor, constant: 8.0)
+        staticStatusConstraint.priority = .defaultLow
+        staticStatusConstraint.isActive = true
+        animatingStatusConstraint = statusLabel.leadingAnchor.constraint(equalTo: spinner.trailingAnchor, constant: 8.0)
 
         percentLabel.translatesAutoresizingMaskIntoConstraints = false
         percentLabel.bottomAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 0).isActive = true
-        percentLabel.rightAnchor.constraint(equalTo: progressView.rightAnchor, constant: -8.0).isActive = true
+        percentLabel.trailingAnchor.constraint(equalTo: progressView.trailingAnchor, constant: -8.0).isActive = true
 
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.topAnchor.constraint(equalTo: progressView.bottomAnchor, constant: 8.0).isActive = true
         cancelButton.centerXAnchor.constraint(equalTo: progressView.centerXAnchor, constant: 0).isActive = true
     }
     
+    private func updateSpinner() {
+        let isConstraintActive = isAnimating
+        let spinnerAlpha: CGFloat = isAnimating ? 1.0 : 0.0
+        
+        self.layoutIfNeeded()
+        UIView.animate(
+            withDuration: 0.3,
+            delay: 0.0,
+            options: [.allowUserInteraction, .beginFromCurrentState],
+            animations: { [weak self] in
+                guard let self = self else { return }
+                self.spinner.alpha = spinnerAlpha
+                self.animatingStatusConstraint.isActive = isConstraintActive
+                self.setNeedsLayout()
+                self.layoutIfNeeded()
+            },
+            completion: nil
+        )
+    }
+    
     internal func update(with progress: ProgressEx) {
+        statusLabel.text = progress.localizedDescription
         percentLabel.text = String(format: "%.0f%%", 100.0 * progress.fractionCompleted)
         progressView.setProgress(Float(progress.fractionCompleted), animated: true)
         cancelButton.isEnabled = cancelButton.isEnabled && progress.isCancellable && !progress.isCancelled
+        isAnimating = progress.isIndeterminate
         self.progress = progress
     }
     
     @objc
     private func didPressCancel(_ sender: UIButton) {
         progress?.cancel()
+        cancelPressCounter += 1
+        if cancelPressCounter >= cancelCountConsideredUnresponsive {
+            unresponsiveCancelHandler?()
+            cancelPressCounter = 0
+        }
     }
 }

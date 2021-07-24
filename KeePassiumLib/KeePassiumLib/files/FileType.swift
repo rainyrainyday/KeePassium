@@ -13,7 +13,9 @@ public enum FileType {
     
     public static let databaseUTIs = [
         "public.data", "public.content", 
+        "public.item", 
         "com.keepassium.kdb", "com.keepassium.kdbx",
+        "com.maxep.mikee.kdb", "com.maxep.mikee.kdbx", 
         "com.jflan.MiniKeePass.kdb", "com.jflan.MiniKeePass.kdbx",
         "com.kptouch.kdb", "com.kptouch.kdbx",
         "com.markmcguill.strongbox.kdb",
@@ -22,7 +24,7 @@ public enum FileType {
         "org.keepassxc"]
     
     public static let keyFileUTIs =
-        ["com.keepassium.keyfile", "public.data", "public.content"]
+        ["com.keepassium.keyfile", "public.data", "public.content", "public.item"]
 
     public enum DatabaseExtensions {
         public static let all = [kdb, kdbx]
@@ -36,7 +38,7 @@ public enum FileType {
     case keyFile
 
     init(for url: URL) {
-        if FileType.DatabaseExtensions.all.contains(url.pathExtension) {
+        if FileType.DatabaseExtensions.all.contains(url.pathExtension.localizedLowercase) {
             self = .database
         } else {
             self = .keyFile
@@ -44,6 +46,6 @@ public enum FileType {
     }
 
     public static func isDatabaseFile(url: URL) -> Bool {
-        return DatabaseExtensions.all.contains(url.pathExtension)
+        return DatabaseExtensions.all.contains(url.pathExtension.localizedLowercase)
     }
 }

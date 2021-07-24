@@ -28,6 +28,8 @@
 				<string>com.markmcguill.strongbox.kdb</string>
 				<string>com.markmcguill.strongbox.kdbx</string>
 				<string>be.kyuran.kypass.kdb</string>
+				<string>com.maxep.mikee.kdb</string>
+				<string>com.maxep.mikee.kdbx</string>
 			</array>
 		</dict>
 		<dict>
@@ -45,6 +47,170 @@
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+            <key>appicon-atom-black</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-black_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-atom-blue</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-blue_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-atom-white</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-white_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-calc</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-calc_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-classic-free</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-classic-free_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-classic-pro</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-classic-pro_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-info</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-info_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-keepass</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-keepass_iPhoneApp_60</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+    <dict>
+        <key>CFBundleAlternateIcons</key>
+        <dict>
+            <key>appicon-atom-black</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-black_iPadApp_76</string>
+                    <string>appicon-atom-black_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-atom-blue</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-blue_iPadApp_76</string>
+                    <string>appicon-atom-blue_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-atom-white</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-atom-white_iPadApp_76</string>
+                    <string>appicon-atom-white_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-calc</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-calc_iPadApp_76</string>
+                    <string>appicon-calc_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-classic-free</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-classic-free_iPadApp_76</string>
+                    <string>appicon-classic-free_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-classic-pro</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-classic-pro_iPadApp_76</string>
+                    <string>appicon-classic-pro_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-info</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-info_iPadApp_76</string>
+                    <string>appicon-info_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+            <key>appicon-keepass</key>
+            <dict>
+                <key>CFBundleIconFiles</key>
+                <array>
+                    <string>appicon-keepass_iPadApp_76</string>
+                    <string>appicon-keepass_iPadProApp_83.5</string>
+                </array>
+                <key>UIPrerenderedIcon</key>
+                <false/>
+            </dict>
+        </dict>
+    </dict>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -54,19 +220,39 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>keepassium</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>26</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NFCReaderUsageDescription</key>
+	<string>KeePassium needs access to NFC to communicate with your YubiKey.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>KeePassium needs the camera to scan QR codes.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use FaceID to unlock KeePassium</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>The app needs permission to export flie to your Photo Library.</string>
+	<string>KeePassium needs permission to export files to your Photo Library.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>mailto</string>
+        <string>https</string>
+        <string>http</string>
+        <string>ftp</string>
+    </array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -74,6 +260,10 @@
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>armv7</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.yubico.ylp</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
@@ -201,6 +391,13 @@
 			<array/>
 			<key>UTTypeIdentifier</key>
 			<string>com.markmcguill.strongbox.kdb</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<string>kdb</string>
+				<key>public.mime-type</key>
+				<string>application/strongbox</string>
+			</dict>
 		</dict>
 		<dict>
 			<key>UTTypeConformsTo</key>
@@ -211,6 +408,33 @@
 			<array/>
 			<key>UTTypeIdentifier</key>
 			<string>com.markmcguill.strongbox.kdbx</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<string>kdbx</string>
+				<key>public.mime-type</key>
+				<string>application/strongbox</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.maxep.mikee.kdb</string>
+			</array>
+			<key>UTTypeIconFiles</key>
+			<array/>
+			<key>UTTypeIdentifier</key>
+			<string>com.maxep.mikee.kdb</string>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.maxep.mikee.kdbx</string>
+			</array>
+			<key>UTTypeIconFiles</key>
+			<array/>
+			<key>UTTypeIdentifier</key>
+			<string>com.maxep.mikee.kdbx</string>
 		</dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
@@ -224,6 +448,15 @@
 				</array>
 			</dict>
 		</dict>
+	</array>
+	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+	<array>
+		<string>A000000527471117</string>
+		<string>A0000006472F0001</string>
+		<string>A0000005272101</string>
+		<string>A000000308</string>
+		<string>A000000527200101</string>
+		<string>A0000005272001</string>
 	</array>
 </dict>
 </plist>

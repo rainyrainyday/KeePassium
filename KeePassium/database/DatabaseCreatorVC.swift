@@ -12,7 +12,13 @@ import KeePassiumLib
 protocol DatabaseCreatorDelegate: class {
     func didPressCancel(in databaseCreatorVC: DatabaseCreatorVC)
     func didPressContinue(in databaseCreatorVC: DatabaseCreatorVC)
-    func didPressPickKeyFile(in databaseCreatorVC: DatabaseCreatorVC, popoverSource: UIView)
+    func didPressErrorDetails(in databaseCreatorVC: DatabaseCreatorVC)
+    func didPressPickKeyFile(
+        in databaseCreatorVC: DatabaseCreatorVC,
+        at popoverAnchor: PopoverAnchor)
+    func didPressPickHardwareKey(
+        in databaseCreatorVC: DatabaseCreatorVC,
+        at popoverAnchor: PopoverAnchor)
 }
 
 class DatabaseCreatorVC: UIViewController {
@@ -24,10 +30,15 @@ class DatabaseCreatorVC: UIViewController {
             showKeyFile(keyFile)
         }
     }
+    public var yubiKey: YubiKey? {
+        didSet {
+            keyFileField?.isYubiKeyActive = (yubiKey != nil)
+        }
+    }
 
     @IBOutlet weak var fileNameField: ValidatingTextField!
     @IBOutlet weak var passwordField: ProtectedTextField!
-    @IBOutlet weak var keyFileField: WatchdogAwareTextField!
+    @IBOutlet weak var keyFileField: KeyFileTextField!
     @IBOutlet weak var continueButton: UIButton!
     @IBOutlet var errorMessagePanel: UIView!
     @IBOutlet weak var errorLabel: UILabel!
@@ -61,6 +72,16 @@ class DatabaseCreatorVC: UIViewController {
         passwordField.delegate = self
         keyFileField.delegate = self
         
+        keyFileField.yubikeyHandler = {
+            [weak self] (field) in
+            guard let self = self else { return }
+            let popoverAnchor = PopoverAnchor(
+                sourceView: self.keyFileField,
+                sourceRect: self.keyFileField.bounds)
+            self.delegate?.didPressPickHardwareKey(in: self, at: popoverAnchor)
+        }
+        keyFileField.isYubiKeyActive = (yubiKey != nil)
+        
         passwordField.becomeFirstResponder()
     }
 
@@ -92,17 +113,17 @@ class DatabaseCreatorVC: UIViewController {
         return passwordField.becomeFirstResponder()
     }
     
-    private func showKeyFile(_ keyFile: URLReference?) {
-        guard let info = keyFile?.getInfo() else {
+    private func showKeyFile(_ keyFileRef: URLReference?) {
+        guard let keyFileRef = keyFileRef else {
             keyFileField.text = nil
             return
         }
         
-        if info.hasError {
-            keyFileField.text = info.errorMessage
+        if keyFileRef.hasError {
+            keyFileField.text = keyFileRef.error?.localizedDescription
             keyFileField.textColor = .errorMessage
         } else {
-            keyFileField.text = info.fileName
+            keyFileField.text = keyFileRef.visibleFileName
             keyFileField.textColor = .primaryText
         }
         setError(message: nil, animated: true)
@@ -137,15 +158,19 @@ class DatabaseCreatorVC: UIViewController {
     }
     
     @IBAction func didPressErrorDetails(_ sender: Any) {
-        let diagInfoVC = ViewDiagnosticsVC.make()
-        present(diagInfoVC, animated: true, completion: nil)
+        delegate?.didPressErrorDetails(in: self)
     }
     
     @IBAction func didPressContinue(_ sender: Any) {
         let hasPassword = passwordField.text?.isNotEmpty ?? false
-        guard hasPassword || (keyFile != nil) else {
+        let hasKeyFile = keyFile != nil
+        let hasYubiKey = yubiKey != nil
+        guard hasPassword || hasKeyFile || hasYubiKey else {
             setError(
-                message: NSLocalizedString("Please enter a password or choose a key file.", comment: "Hint shown when both password and key file are empty."),
+                message: NSLocalizedString(
+                    "[Database/Create] Please enter a password or choose a key file.",
+                    value: "Please enter a password or choose a key file.",
+                    comment: "Hint shown when both password and key file are empty."),
                 animated: true)
             return
         }
@@ -177,7 +202,8 @@ extension DatabaseCreatorVC: UITextFieldDelegate {
         if textField === keyFileField {
             setError(message: nil, animated: true)
             passwordField.becomeFirstResponder()
-            delegate?.didPressPickKeyFile(in: self, popoverSource: textField)
+            let popoverAnchor = PopoverAnchor(sourceView: textField, sourceRect: textField.bounds)
+            delegate?.didPressPickKeyFile(in: self, at: popoverAnchor)
             return false
         }
         return true
@@ -188,41 +214,5 @@ extension DatabaseCreatorVC: UITextFieldDelegate {
             didPressContinue(textField)
         }
         return true
-    }
-}
-
-extension DatabaseCreatorVC: ProgressViewHost {
-    
-    func showProgressView(title: String, allowCancelling: Bool) {
-        if progressOverlay != nil {
-            progressOverlay?.title = title
-            progressOverlay?.isCancellable = allowCancelling
-            return
-        }
-        navigationItem.hidesBackButton = true
-        navigationItem.rightBarButtonItem?.isEnabled = false
-        continueButton.isEnabled = false
-        progressOverlay = ProgressOverlay.addTo(
-            containerView,
-            title: title,
-            animated: true)
-        progressOverlay?.isCancellable = allowCancelling
-    }
-    
-    func updateProgressView(with progress: ProgressEx) {
-        progressOverlay?.update(with: progress)
-    }
-    
-    func hideProgressView() {
-        guard progressOverlay != nil else { return }
-        navigationItem.hidesBackButton = false
-        navigationItem.rightBarButtonItem?.isEnabled = true
-        continueButton.isEnabled = true
-        progressOverlay?.dismiss(animated: true) {
-            [weak self] (finished) in
-            guard let _self = self else { return }
-            _self.progressOverlay?.removeFromSuperview()
-            _self.progressOverlay = nil
-        }
     }
 }

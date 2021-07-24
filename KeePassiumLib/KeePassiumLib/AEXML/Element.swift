@@ -239,7 +239,7 @@ open class AEXMLElement {
     }
     
     fileprivate func removeChild(_ child: AEXMLElement) {
-        if let childIndex = children.index(where: { $0 === child }) {
+        if let childIndex = children.firstIndex(where: { $0 === child }) {
             children.remove(at: childIndex)
         }
     }
@@ -329,6 +329,14 @@ public extension String {
         let escapeChars = ["<" : "&lt;", ">" : "&gt;", "'" : "&apos;", "\"" : "&quot;"]
         for (char, echar) in escapeChars {
             escaped = escaped.replacingOccurrences(of: char, with: echar, options: .literal)
+        }
+        
+        // remove low-order ASCII characters, if any.
+        // (They should not be here anyway, as they are invalid in XML.)
+        let validLowOrderASCIICodes = Set<UInt8>([0x09, 0x0A, 0x0D])
+        escaped.removeAll {
+            guard let asciiCode = $0.asciiValue else { return false }
+            return asciiCode < 0x20 && !validLowOrderASCIICodes.contains(asciiCode)
         }
         
         return escaped

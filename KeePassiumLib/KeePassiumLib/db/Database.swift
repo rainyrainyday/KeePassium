@@ -16,11 +16,23 @@ public enum DatabaseError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .loadError:
-            return NSLocalizedString("Cannot open database", comment: "Error message while opening a database")
+            return NSLocalizedString(
+                "[DatabaseError] Cannot open database",
+                bundle: Bundle.framework,
+                value: "Cannot open database",
+                comment: "Error message while opening a database")
         case .invalidKey:
-            return NSLocalizedString("Invalid password or key file", comment: "Error message - the user provided wrong master key for decryption.")
+            return NSLocalizedString(
+                "[DatabaseError] Invalid password or key file",
+                bundle: Bundle.framework,
+                value: "Invalid password or key file",
+                comment: "Error message: user provided a wrong master key for decryption.")
         case .saveError:
-            return NSLocalizedString("Cannot save database", comment: "Error message while saving a database")
+            return NSLocalizedString(
+                "[DatabaseError] Cannot save database",
+                bundle: Bundle.framework,
+                value: "Cannot save database",
+                comment: "Error message while saving a database")
         }
     }
     public var failureReason: String? {
@@ -36,21 +48,31 @@ public enum DatabaseError: LocalizedError {
 }
 
 public struct SearchQuery {
-    public var includeSubgroups: Bool
-    public var includeDeleted: Bool
-    public var text: String {
-        didSet {
-            textWords = text.split(separator: " ")
-        }
-    }
-    public var textWords: Array<Substring>
+    public let includeSubgroups: Bool
+    public let includeDeleted: Bool
+    public let includeFieldNames: Bool
+    public let includeProtectedValues: Bool
+    public let compareOptions: String.CompareOptions
+    
+    public let text: String
+    public let textWords: Array<Substring>
+    
     public init(
-        includeSubgroups: Bool, includeDeleted: Bool, text: String, textWords: Array<Substring>)
+        includeSubgroups: Bool,
+        includeDeleted: Bool,
+        includeFieldNames: Bool,
+        includeProtectedValues: Bool,
+        compareOptions: String.CompareOptions,
+        text: String,
+        textWords: Array<Substring>)
     {
         self.includeSubgroups = includeSubgroups
         self.includeDeleted = includeDeleted
+        self.includeFieldNames = includeFieldNames
+        self.includeProtectedValues = includeProtectedValues
+        self.compareOptions = compareOptions
         self.text = text
-        self.textWords = textWords
+        self.textWords = text.split(separator: " ")
     }
 }
 
@@ -60,14 +82,12 @@ public class DatabaseLoadingWarnings {
     
     public var isEmpty: Bool { return messages.isEmpty }
     
+    public var isGeneratorImportant = false
+    
     internal init() {
         databaseGenerator = nil
         messages = []
     }
-}
-
-public protocol DatabaseProgressDelegate {
-    func databaseProgressChanged(percent: Int)
 }
 
 open class Database: Eraseable {
@@ -77,7 +97,7 @@ open class Database: Eraseable {
 
     public internal(set) var progress = ProgressEx()
 
-    internal var compositeKey = SecureByteArray()
+    internal var compositeKey = CompositeKey.empty
     
     public func initProgress() -> ProgressEx {
         progress = ProgressEx()
@@ -107,8 +127,9 @@ open class Database: Eraseable {
     }
     
     public func load(
+        dbFileName: String,
         dbFileData: ByteArray,
-        compositeKey: SecureByteArray,
+        compositeKey: CompositeKey,
         warnings: DatabaseLoadingWarnings
     ) throws {
         fatalError("Pure virtual method")
@@ -118,7 +139,7 @@ open class Database: Eraseable {
         fatalError("Pure virtual method")
     }
     
-    public func changeCompositeKey(to newKey: SecureByteArray) {
+    public func changeCompositeKey(to newKey: CompositeKey) {
         fatalError("Pure virtual method")
     }
     
@@ -154,6 +175,39 @@ open class Database: Eraseable {
 
     public func makeAttachment(name: String, data: ByteArray) -> Attachment {
         fatalError("Pure virtual method")
+    }
+    
+    internal func resolveReferences<T>(
+        allEntries: T,
+        parentProgress: ProgressEx,
+        pendingProgressUnits: Int64)
+        where T: Collection, T.Element: Entry
+    {
+        Diag.debug("Resolving references")
+        
+        let resolvingProgress = ProgressEx()
+        resolvingProgress.totalUnitCount = Int64(allEntries.count)
+        resolvingProgress.localizedDescription = LString.Progress.resolvingFieldReferences
+        progress.addChild(resolvingProgress, withPendingUnitCount: pendingProgressUnits)
+        
+        allEntries.forEach { entry in
+            entry.fields.forEach { field in
+                field.unresolveReferences()
+            }
+        }
+        
+        var entriesProcessed = 0
+        allEntries.forEach { entry in
+            entry.fields.forEach { field in
+                field.resolveReferences(entries: allEntries)
+            }
+            entriesProcessed += 1
+            if entriesProcessed % 100 == 0 {
+                resolvingProgress.completedUnitCount = Int64(entriesProcessed)
+            }
+        }
+        resolvingProgress.completedUnitCount = resolvingProgress.totalUnitCount 
+        Diag.debug("References resolved OK")
     }
 }
 

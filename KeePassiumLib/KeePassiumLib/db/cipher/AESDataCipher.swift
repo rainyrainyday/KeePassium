@@ -17,19 +17,19 @@ final class AESDataCipher: DataCipher {
     var initialVectorSize: Int { return kCCBlockSizeAES128 }
     var keySize: Int { return kCCKeySizeAES256 }
 
-    private var progress = ProgressEx()
+    internal var progress = ProgressEx()
 
     init() {
     }
     
-    func initProgress() -> ProgressEx {
-        progress = ProgressEx()
-        return progress
-    }
     func encrypt(plainText data: ByteArray, key: ByteArray, iv: ByteArray) throws -> ByteArray {
         assert(key.count == kCCKeySizeAES256)
         assert(iv.count == kCCBlockSizeAES128)
-        progress.localizedDescription = NSLocalizedString("Encrypting", comment: "Status message")
+        progress.localizedDescription = NSLocalizedString(
+            "[Cipher/Progress] Encrypting",
+            bundle: Bundle.framework,
+            value: "Encrypting",
+            comment: "Progress status")
         
         let operation: CCOperation = UInt32(kCCEncrypt)
         let algoritm: CCAlgorithm = UInt32(kCCAlgorithmAES)
@@ -73,7 +73,12 @@ final class AESDataCipher: DataCipher {
         assert(iv.count == kCCBlockSizeAES128)
         assert(encData.count % kCCBlockSizeAES128 == 0)
         
-        progress.localizedDescription = NSLocalizedString("Decrypting", comment: "Status message")
+        progress.localizedDescription = NSLocalizedString(
+            "[Cipher/Progress] Decrypting",
+            bundle: Bundle.framework,
+            value: "Decrypting",
+            comment: "Progress status")
+        
         let operation: CCOperation = UInt32(kCCDecrypt)
         let algoritm: CCAlgorithm = UInt32(kCCAlgorithmAES)
         let options: CCOptions = UInt32(kCCOptionPKCS7Padding)

@@ -8,8 +8,8 @@
 
 import Foundation
 
-public class ByteArray: Eraseable {
-    
+public class ByteArray: Eraseable, Codable, CustomDebugStringConvertible {
+
     public class InputStream {
         fileprivate let base: Foundation.InputStream
         var hasBytesAvailable: Bool { return base.hasBytesAvailable }
@@ -26,13 +26,14 @@ public class ByteArray: Eraseable {
         }
         
         func read(count: Int) -> ByteArray? {
-            let out = ByteArray(count: count)
+            var out = [UInt8].init(repeating: 0, count: count)
 
             var bytesRead = 0
             while bytesRead < count {
                 let remainingCount = count - bytesRead
-                let n = out.withMutableBytes { (bytes: inout [UInt8]) in
-                    return base.read(&bytes + bytesRead, maxLength: remainingCount)
+                let n = out.withUnsafeMutableBufferPointer {
+                    (bytes: inout UnsafeMutableBufferPointer<UInt8>) in
+                    return base.read(bytes.baseAddress! + bytesRead, maxLength: remainingCount)
                 }
                 guard n > 0 else {
                     print("Stream reading problem")
@@ -40,7 +41,13 @@ public class ByteArray: Eraseable {
                 }
                 bytesRead += n
             }
-            return out
+            return ByteArray(bytes: out)
+        }
+        
+        @discardableResult
+        func skip(count: Int) -> Int {
+            let dataRead = read(count: count)
+            return dataRead?.count ?? 0
         }
         func readUInt8() -> UInt8? {
             let data = self.read(count: MemoryLayout<UInt8>.size)
@@ -54,6 +61,10 @@ public class ByteArray: Eraseable {
             let data = self.read(count: MemoryLayout<UInt32>.size)
             return UInt32(data: data)
         }
+        func readUInt64() -> UInt64? {
+            let data = self.read(count: MemoryLayout<UInt64>.size)
+            return UInt64(data: data)
+        }
         func readInt8() -> Int8? {
             let data = self.read(count: MemoryLayout<Int8>.size)
             return Int8(data: data)
@@ -65,6 +76,10 @@ public class ByteArray: Eraseable {
         func readInt32() -> Int32? {
             let data = self.read(count: MemoryLayout<Int32>.size)
             return Int32(data: data)
+        }
+        func readInt64() -> Int64? {
+            let data = self.read(count: MemoryLayout<Int64>.size)
+            return Int64(data: data)
         }
     }
     public class OutputStream {
@@ -102,6 +117,10 @@ public class ByteArray: Eraseable {
         }
     }
     
+    private enum CodingKeys: CodingKey {
+        case bytes
+    }
+    
     fileprivate var bytes: [UInt8]
     fileprivate var sha256cache: ByteArray?
     fileprivate var sha512cache: ByteArray?
@@ -123,7 +142,7 @@ public class ByteArray: Eraseable {
         return sha512cache! 
     }
     
-    public var asData: Data { return Data(bytes: self.bytes) }
+    public var asData: Data { return Data(self.bytes) }
     
     subscript (index: Int) -> UInt8 {
         get { return bytes[index] }
@@ -133,15 +152,15 @@ public class ByteArray: Eraseable {
         return ByteArray(bytes: self.bytes[range])
     }
 
+    public var debugDescription: String {
+        return asHexString
+    }
+    
     public init() {
         bytes = []
     }
     public init(data: Data) {
-        let bytes = data.withUnsafeBytes{ (pointer: UnsafePointer<UInt8>) -> [UInt8] in
-            let buffer = UnsafeBufferPointer(start: pointer, count: data.count)
-            return Array<UInt8>(buffer)
-        }
-        self.bytes = bytes
+        self.bytes = Array(data)
     }
     public init(bytes: [UInt8]) {
         self.bytes = [UInt8](bytes)
@@ -149,6 +168,7 @@ public class ByteArray: Eraseable {
     public init(bytes: ArraySlice<UInt8>) {
         self.bytes = [UInt8](bytes)
     }
+    
     convenience public init(count: Int) {
         self.init(bytes: [UInt8](repeating: 0, count: count))
     }
@@ -172,7 +192,7 @@ public class ByteArray: Eraseable {
         }
     }
     
-    convenience public init?(hexString string: String) {
+    convenience public init?<T: StringProtocol>(hexString string: T) {
         func decodeNibble(u: UInt16) -> UInt8? {
             switch(u) {
             case 0x30 ... 0x39:
@@ -298,7 +318,7 @@ public class ByteArray: Eraseable {
 
     
     public func base64EncodedString() -> String {
-        return Data(bytes: bytes).base64EncodedString()
+        return Data(bytes).base64EncodedString()
     }
     
     public func toString(using encoding: String.Encoding = .utf8) -> String? {
@@ -306,18 +326,18 @@ public class ByteArray: Eraseable {
     }
     
     public func asInputStream() -> ByteArray.InputStream {
-        return ByteArray.InputStream(data: Data(bytes: self.bytes))
+        return ByteArray.InputStream(data: Data(self.bytes))
     }
     public static func makeOutputStream() -> ByteArray.OutputStream {
         return ByteArray.OutputStream()
     }
     
     public func gunzipped() throws -> ByteArray {
-        return try ByteArray(data: Data(bytes: self.bytes).gunzipped())
+        return try ByteArray(data: Data(self.bytes).gunzipped())
     }
 
     public func gzipped() throws -> ByteArray {
-        return try ByteArray(data: Data(bytes: self.bytes).gzipped(level: .bestCompression))
+        return try ByteArray(data: Data(self.bytes).gzipped(level: .bestCompression))
     }
     
     public func containsOnly(_ value: UInt8) -> Bool {
@@ -344,6 +364,7 @@ extension ByteArray: Hashable {
 
 public class SecureByteArray: ByteArray {
     override public var sha256: SecureByteArray { return SecureByteArray(CryptoManager.sha256(of: self)) }
+    override public var sha512: SecureByteArray { return SecureByteArray(CryptoManager.sha512(of: self)) }
 
     override convenience public init() {
         self.init(bytes: [])
@@ -351,7 +372,7 @@ public class SecureByteArray: ByteArray {
     convenience public init(_ source: ByteArray) {
         self.init(bytes: source.bytesCopy())
     }
-    override private init(bytes: [UInt8]) {
+    override public init(bytes: [UInt8]) {
         super.init(bytes: bytes)
         self.bytes.withUnsafeBufferPointer { (ptr) -> Void in
             mlock(ptr.baseAddress, ptr.count)
@@ -363,6 +384,11 @@ public class SecureByteArray: ByteArray {
             mlock(ptr.baseAddress, ptr.count)
         }
     }
+    
+    required init(from decoder: Decoder) throws {
+        try super.init(from: decoder)
+    }
+    
     deinit {
         self.bytes.withUnsafeBufferPointer { (ptr) -> Void in
             munlock(ptr.baseAddress, ptr.count)

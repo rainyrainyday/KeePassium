@@ -31,16 +31,15 @@ public class Group1: Group {
     private(set)  var id: Group1ID
     internal var level: Int16
     private(set)  var flags: Int32 
+
     override public var canExpire: Bool {
-        get { return expiryTime == Date.kp1Never }
+        get { return expiryTime != Date.kp1Never }
         set {
             let never = Date.kp1Never
             if newValue {
-                expiryTime = never
+                expiryTime = never - 1.0
             } else {
-                if expiryTime == never {
-                    expiryTime = never
-                } 
+                expiryTime = never
             }
         }
     }
@@ -50,33 +49,43 @@ public class Group1: Group {
         level = 0
         flags = 0
         super.init(database: database)
+        
+        canExpire = false
     }
+    
     deinit {
         erase()
     }
+    
     override public func erase() {
         id = -1
         level = 0
         flags = 0
         super.erase()
+        
+        canExpire = false
     }
     
     override public func isNameReserved(name: String) -> Bool {
         return name == Group1.backupGroupName
     }
     
-    override public func clone() -> Group {
+    override public func clone(makeNewUUID: Bool) -> Group {
         let copy = Group1(database: database)
-        apply(to: copy)
+        apply(to: copy, makeNewUUID: makeNewUUID)
         return copy
     }
     
-    public func apply(to target: Group1) {
-        super.apply(to: target)
-        
-        target.id = id
-        target.level = level
-        target.flags = flags
+    override public func apply(to target: Group, makeNewUUID: Bool) {
+        super.apply(to: target, makeNewUUID: makeNewUUID)
+        guard let targetGroup1 = target as? Group1 else {
+            Diag.warning("Tried to apply group state to unexpected group class")
+            assertionFailure()
+            return
+        }
+        targetGroup1.id = id
+        targetGroup1.level = level
+        targetGroup1.flags = flags
     }
     
     override public func add(group: Group) {
@@ -96,13 +105,11 @@ public class Group1: Group {
         (entry as! Entry1).groupID = -1
     }
     
-    override public func createEntry() -> Entry {
+    override public func createEntry(detached: Bool = false) -> Entry {
         let newEntry = Entry1(database: database)
         newEntry.uuid = UUID()
         
-        if self.iconID == Group.defaultIconID {
-            newEntry.iconID = Entry.defaultIconID
-        } else {
+        if self.iconID != Group.defaultIconID && self.iconID != Group.defaultOpenIconID {
             newEntry.iconID = self.iconID
         }
         
@@ -114,11 +121,13 @@ public class Group1: Group {
         newEntry.expiryTime = Date.kp1Never
         
         newEntry.groupID = self.id
-        self.add(entry: newEntry)
+        if !detached {
+            self.add(entry: newEntry)
+        }
         return newEntry
     }
     
-    override public func createGroup() -> Group {
+    override public func createGroup(detached: Bool = false) -> Group {
         let newGroup = Group1(database: database)
         newGroup.uuid = UUID()
         newGroup.flags = 0
@@ -134,7 +143,9 @@ public class Group1: Group {
         newGroup.expiryTime = Date.kp1Never
         
         newGroup.level = self.level + 1
-        self.add(group: newGroup)
+        if !detached {
+            self.add(group: newGroup)
+        }
         return newGroup
     }
     

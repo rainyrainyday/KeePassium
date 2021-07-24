@@ -19,29 +19,30 @@ public class Clipboard {
     private init() {
     }
     
-    public func insert(url: URL, timeout: Double) {
+    public func insert(url: URL, timeout: Double?=nil) {
         Diag.debug("Inserted a URL to clipboard")
         insert(items: [[(kUTTypeURL as String) : url]], timeout: timeout)
         insertedURL = url
     }
     
-    public func insert(text: String, timeout: Double) {
+    public func insert(text: String, timeout: Double?=nil) {
         Diag.debug("Inserted a string to clipboard")
         insert(items: [[(kUTTypeUTF8PlainText as String) : text]], timeout: timeout)
         insertedText = text
     }
     
-    private func insert(items: [[String: Any]], timeout: Double) {
-        if timeout < 0 {
-            UIPasteboard.general.setItems(items, options: [.localOnly: true])
-        } else {
+    private func insert(items: [[String: Any]], timeout: Double?) {
+        let isLocalOnly = !Settings.current.isUniversalClipboardEnabled
+        if let timeout = timeout, timeout > 0.0 {
             UIPasteboard.general.setItems(
                 items,
                 options: [
-                    .localOnly: true,
+                    .localOnly: isLocalOnly,
                     .expirationDate: Date(timeIntervalSinceNow: timeout)
                 ]
             )
+        } else {
+            UIPasteboard.general.setItems(items, options: [.localOnly: isLocalOnly])
         }
     }
     

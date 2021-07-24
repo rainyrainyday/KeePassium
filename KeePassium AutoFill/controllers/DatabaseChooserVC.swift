@@ -10,14 +10,14 @@ import KeePassiumLib
 
 protocol DatabaseChooserDelegate: class {
     func databaseChooserShouldCancel(_ sender: DatabaseChooserVC)
-    func databaseChooserShouldAddDatabase(_ sender: DatabaseChooserVC)
+    func databaseChooserShouldAddDatabase(_ sender: DatabaseChooserVC, popoverAnchor: PopoverAnchor)
     func databaseChooser(_ sender: DatabaseChooserVC, didSelectDatabase urlRef: URLReference)
     func databaseChooser(_ sender: DatabaseChooserVC, shouldDeleteDatabase urlRef: URLReference)
     func databaseChooser(_ sender: DatabaseChooserVC, shouldRemoveDatabase urlRef: URLReference)
     func databaseChooser(_ sender: DatabaseChooserVC, shouldShowInfoForDatabase urlRef: URLReference)
 }
 
-class DatabaseChooserVC: UITableViewController, Refreshable {
+class DatabaseChooserVC: UITableViewController, DynamicFileList, Refreshable {
     private enum CellID {
         static let fileItem = "FileItemCell"
         static let noFiles = "NoFilesCell"
@@ -25,16 +25,18 @@ class DatabaseChooserVC: UITableViewController, Refreshable {
     
     weak var delegate: DatabaseChooserDelegate?
     
-    private var databaseRefs: [URLReference] = []
+    private(set) var databaseRefs: [URLReference] = []
 
     private let fileInfoReloader = FileInfoReloader()
 
+    internal var ongoingUpdateAnimations = 0
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         clearsSelectionOnViewWillAppear = true
         
         let refreshControl = UIRefreshControl()
-        refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
+        refreshControl.addTarget(self, action: #selector(didPullToRefresh), for: .valueChanged)
         self.refreshControl = refreshControl
 
         let longPressGestureRecognizer = UILongPressGestureRecognizer(
@@ -51,23 +53,52 @@ class DatabaseChooserVC: UITableViewController, Refreshable {
         refresh()
     }
     
+    
+    @objc
+    private func didPullToRefresh() {
+        if !tableView.isDragging {
+            refreshControl?.endRefreshing()
+            refresh()
+        }
+    }
+    
+    override func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if refreshControl?.isRefreshing ?? false {
+            refreshControl?.endRefreshing()
+            refresh()
+        }
+    }
+
     @objc func refresh() {
         databaseRefs = FileKeeper.shared.getAllReferences(
             fileType: .database,
             includeBackup: Settings.current.isBackupFilesVisible)
-        fileInfoReloader.reload(databaseRefs) { [weak self] in
-            guard let self = self else { return }
-            self.sortFileList()
-            if self.refreshControl?.isRefreshing ?? false {
-                self.refreshControl?.endRefreshing()
+        sortFileList()
+        
+        fileInfoReloader.getInfo(
+            for: databaseRefs,
+            update: { [weak self] (ref) in
+                guard let self = self else { return }
+                self.sortAndAnimateFileInfoUpdate(refs: &self.databaseRefs, in: self.tableView)
+            },
+            completion: { [weak self] in
+                guard let self = self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.sortingAnimationDuration) {
+                    [weak self] in
+                    self?.sortFileList()
+                }
             }
-        }
+        )
     }
     
     fileprivate func sortFileList() {
         let fileSortOrder = Settings.current.filesSortOrder
         databaseRefs.sort { return fileSortOrder.compare($0, $1) }
         tableView.reloadData()
+    }
+
+    func getIndexPath(for fileIndex: Int) -> IndexPath {
+        return IndexPath(row: fileIndex, section: 0)
     }
     
     
@@ -76,18 +107,19 @@ class DatabaseChooserVC: UITableViewController, Refreshable {
         delegate?.databaseChooserShouldCancel(self)
     }
     
-    @IBAction func didPressAddDatabase(_ sender: Any) {
+    @IBAction func didPressAddDatabase(_ sender: UIBarButtonItem) {
         Watchdog.shared.restart()
-        delegate?.databaseChooserShouldAddDatabase(self)
+        let popoverAnchor = PopoverAnchor(barButtonItem: sender)
+        delegate?.databaseChooserShouldAddDatabase(self, popoverAnchor: popoverAnchor)
     }
     
     @objc func didLongPressTableView(_ gestureRecognizer: UILongPressGestureRecognizer) {
+        Watchdog.shared.restart()
         let point = gestureRecognizer.location(in: tableView)
         guard gestureRecognizer.state == .began,
             let indexPath = tableView.indexPathForRow(at: point),
-            tableView(tableView, canEditRowAt: indexPath),
-            let cell = tableView.cellForRow(at: indexPath) else { return }
-        cell.demoShowEditActions(lastActionColor: UIColor.destructiveTint)
+            tableView(tableView, canEditRowAt: indexPath) else { return }
+        showActions(for: indexPath)
     }
     
 
@@ -103,17 +135,28 @@ class DatabaseChooserVC: UITableViewController, Refreshable {
         }
     }
 
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-
+    override func tableView(
+        _ tableView: UITableView,
+        cellForRowAt indexPath: IndexPath)
+        -> UITableViewCell
+    {
         guard databaseRefs.count > 0 else {
             let cell = tableView.dequeueReusableCell(withIdentifier: CellID.noFiles, for: indexPath)
             return cell
         }
         
-        let cell = tableView
-            .dequeueReusableCell(withIdentifier: CellID.fileItem, for: indexPath)
-            as! DatabaseFileListCell
-        cell.urlRef = databaseRefs[indexPath.row]
+        let cell = FileListCellFactory.dequeueReusableCell(
+            from: tableView,
+            withIdentifier: CellID.fileItem,
+            for: indexPath,
+            for: .database)
+        let dbRef = databaseRefs[indexPath.row]
+        cell.showInfo(from: dbRef)
+        cell.isAnimating = dbRef.isRefreshingInfo
+        cell.accessoryTapHandler = { [weak self, indexPath] cell in
+            guard let self = self else { return }
+            self.tableView(self.tableView, accessoryButtonTappedForRowWith: indexPath)
+        }
         return cell
     }
 
@@ -138,29 +181,63 @@ class DatabaseChooserVC: UITableViewController, Refreshable {
     
     override func tableView(
         _ tableView: UITableView,
-        editActionsForRowAt indexPath: IndexPath
-        ) -> [UITableViewRowAction]?
-    {
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
         Watchdog.shared.restart()
         guard databaseRefs.count > 0 else { return nil }
         
         let urlRef = databaseRefs[indexPath.row]
-        let isInternalFile = urlRef.location.isInternal
-        let deleteAction = UITableViewRowAction(
+        let destructiveFileAction = DestructiveFileAction.get(for: urlRef.location)
+        let deleteAction = UIContextualAction(
             style: .destructive,
-            title: isInternalFile ? LString.actionDeleteFile : LString.actionRemoveFile)
+            title: destructiveFileAction.title)
         {
-            [weak self] (_,_) in
-            guard let _self = self else { return }
-            _self.setEditing(false, animated: true)
-            if isInternalFile {
-                _self.delegate?.databaseChooser(_self, shouldDeleteDatabase: urlRef)
-            } else {
-                _self.delegate?.databaseChooser(_self, shouldRemoveDatabase: urlRef)
+            [weak self] (action, sourceView, completion) in
+            guard let self = self else { return }
+            self.setEditing(false, animated: true)
+            switch destructiveFileAction {
+            case .delete:
+                self.delegate?.databaseChooser(self, shouldDeleteDatabase: urlRef)
+            case .remove:
+                self.delegate?.databaseChooser(self, shouldRemoveDatabase: urlRef)
             }
+            if #available(iOS 13, *) {
+                completion(true)
+            } else {
+                completion(false) 
+            }
+            completion(true)
         }
         deleteAction.backgroundColor = UIColor.destructiveTint
         
-        return [deleteAction]
+        return UISwipeActionsConfiguration(actions: [deleteAction])
+    }
+    
+    private func showActions(for indexPath: IndexPath) {
+        let urlRef = databaseRefs[indexPath.row]
+        let isInternalFile = urlRef.location.isInternal
+        let deleteAction = UIAlertAction(
+            title: isInternalFile ? LString.actionDeleteFile : LString.actionRemoveFile,
+            style: .destructive,
+            handler: { [weak self] _ in
+                guard let self = self else { return }
+                if isInternalFile {
+                    self.delegate?.databaseChooser(self, shouldDeleteDatabase: urlRef)
+                } else {
+                    self.delegate?.databaseChooser(self, shouldRemoveDatabase: urlRef)
+                }
+            }
+        )
+        let cancelAction = UIAlertAction(title: LString.actionCancel, style: .cancel, handler: nil)
+        
+        let menu = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        menu.addAction(deleteAction)
+        menu.addAction(cancelAction)
+        
+        let pa = PopoverAnchor(tableView: tableView, at: indexPath)
+        if let popover = menu.popoverPresentationController {
+            pa.apply(to: popover)
+        }
+        present(menu, animated: true)
     }
 }

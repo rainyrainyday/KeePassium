@@ -10,8 +10,78 @@ import UIKit
 import MobileCoreServices
 import KeePassiumLib
 
+
+protocol FieldCopiedViewDelegate: class {
+    func didPressExport(in view: FieldCopiedView, field: ViewableField)
+}
+
+class FieldCopiedView: UIView {
+    weak var delegate: FieldCopiedViewDelegate?
+    weak var field: ViewableField?
+    
+    weak var hidingTimer: Timer?
+    
+    public func show(in tableView: UITableView, at indexPath: IndexPath) {
+        hide(animated: false)
+        
+        guard let cell = tableView.cellForRow(at: indexPath) else { assertionFailure(); return }
+        self.frame = cell.bounds
+        self.layoutIfNeeded()
+        cell.addSubview(self)
+        
+        self.alpha = 0.0
+        UIView.animate(
+            withDuration: 0.3,
+            delay: 0.0,
+            options: [.curveEaseOut, .allowUserInteraction] ,
+            animations: { [weak self] in
+                self?.backgroundColor = UIColor.actionTint
+                self?.alpha = 0.9
+            },
+            completion: { [weak self] finished in
+                guard let self = self else { return }
+                tableView.deselectRow(at: indexPath, animated: false)
+                self.hidingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) {
+                    [weak self] _ in
+                    self?.hide(animated: true)
+                }
+            }
+        )
+    }
+    
+    public func hide(animated: Bool) {
+        hidingTimer?.invalidate()
+        hidingTimer = nil
+        guard animated else {
+            self.layer.removeAllAnimations()
+            self.removeFromSuperview()
+            return
+        }
+        UIView.animate(
+            withDuration: 0.2,
+            delay: 0.0,
+            options: [.curveEaseIn, .beginFromCurrentState],
+            animations: { [weak self] in
+                self?.backgroundColor = UIColor.actionTint
+                self?.alpha = 0.0
+            },
+            completion: { [weak self] finished in
+                if finished {
+                    self?.removeFromSuperview()
+                }
+            }
+        )
+    }
+    
+    @IBAction func didPressExport(_ sender: UIButton) {
+        guard let field = field else { return }
+        delegate?.didPressExport(in: self, field: field)
+    }
+}
+
+
 class ViewEntryFieldsVC: UITableViewController, Refreshable {
-    @IBOutlet weak var copiedCellView: UIView!
+    @IBOutlet weak var copiedCellView: FieldCopiedView!
     
     private let editButton = UIBarButtonItem()
 
@@ -19,6 +89,8 @@ class ViewEntryFieldsVC: UITableViewController, Refreshable {
     private var isHistoryMode = false
     private var sortedFields: [ViewableField] = []
     private var entryChangeNotifications: EntryChangeNotifications!
+    
+    private var entryFieldEditorCoordinator: EntryFieldEditorCoordinator?
 
     static func make(with entry: Entry?, historyMode: Bool) -> ViewEntryFieldsVC {
         let viewEntryFieldsVC = ViewEntryFieldsVC.instantiateFromStoryboard()
@@ -33,15 +105,23 @@ class ViewEntryFieldsVC: UITableViewController, Refreshable {
         
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 44
+
+        copiedCellView.delegate = self
         
-        editButton.image = UIImage(asset: .editItemToolbar)
+        editButton.title = LString.actionEdit
         editButton.target = self
-        editButton.action = #selector(onEditAction)
-        
+        editButton.action = #selector(didPressEdit)
+        editButton.accessibilityIdentifier = "edit_entry_button" 
+
         entryChangeNotifications = EntryChangeNotifications(observer: self)
+        entry?.touch(.accessed)
         refresh()
     }
 
+    deinit {
+        entryFieldEditorCoordinator = nil
+    }
+    
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         editButton.isEnabled = !(entry?.isDeleted ?? true)
@@ -71,10 +151,32 @@ class ViewEntryFieldsVC: UITableViewController, Refreshable {
     }
     
     
-    @objc func onEditAction() {
-        guard let entry = entry else { return }
-        let editEntryFieldsVC = EditEntryVC.make(entry: entry, popoverSource: nil, delegate: nil)
-        present(editEntryFieldsVC, animated: true, completion: nil)
+    @objc func didPressEdit() {
+        assert(entryFieldEditorCoordinator == nil)
+        guard let entry = entry,
+              let parent = entry.parent,
+              let database = parent.database
+        else {
+            Diag.warning("Entry, parent group or database are undefined")
+            assertionFailure()
+            return
+        }
+        
+        let modalRouter = NavigationRouter.createModal(style: .formSheet, at: nil)
+        let entryFieldEditorCoordinator = EntryFieldEditorCoordinator(
+            router: modalRouter,
+            database: database,
+            parent: parent,
+            target: entry
+        )
+        entryFieldEditorCoordinator.dismissHandler = { [weak self] coordinator in
+            self?.entryFieldEditorCoordinator = nil
+        }
+        entryFieldEditorCoordinator.delegate = self
+        entryFieldEditorCoordinator.start()
+        modalRouter.dismissAttemptDelegate = entryFieldEditorCoordinator
+        self.entryFieldEditorCoordinator = entryFieldEditorCoordinator
+        present(modalRouter, animated: true, completion: nil)
     }
     
 
@@ -105,65 +207,20 @@ class ViewEntryFieldsVC: UITableViewController, Refreshable {
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let fieldNumber = indexPath.row
         let field = sortedFields[fieldNumber]
-        guard let text = field.value else { return }
+        guard let text = field.resolvedValue else { return }
 
-        let timeout = Double(Settings.current.clipboardTimeout.seconds)
-        if text.isOpenableURL {
-            Clipboard.general.insert(url: URL(string: text)!, timeout: timeout)
-        } else {
-            Clipboard.general.insert(text: text, timeout: timeout)
-        }
-        animateCopyToClipboard(indexPath: indexPath)
+        Clipboard.general.insert(text)
+        entry?.touch(.accessed)
+        animateCopyToClipboard(indexPath: indexPath, field: field)
     }
     
-    func animateCopyToClipboard(indexPath: IndexPath) {
-        tableView.allowsSelection = false
-        guard let cell = tableView.cellForRow(at: indexPath) else { assertionFailure(); return }
-        copiedCellView.frame = cell.bounds
-        copiedCellView.layoutIfNeeded()
-        cell.addSubview(copiedCellView)
-
+    func animateCopyToClipboard(indexPath: IndexPath, field: ViewableField) {
+        copiedCellView.field = field
+        HapticFeedback.play(.copiedToClipboard)
         DispatchQueue.main.async { [weak self] in
-            guard let _self = self else { return }
-            _self.showCopyNotification(indexPath: indexPath, view: _self.copiedCellView)
+            guard let self = self else { return }
+            self.copiedCellView.show(in: self.tableView, at: indexPath)
         }
-    }
-    
-    private func showCopyNotification(indexPath: IndexPath, view: UIView) {
-        view.alpha = 0.0
-        UIView.animate(
-            withDuration: 0.3,
-            delay: 0.0,
-            options: .curveEaseOut ,
-            animations: {
-                view.backgroundColor = UIColor.actionTint
-                view.alpha = 0.8
-            },
-            completion: {
-                [weak self] finished in
-                guard let _self = self else { return }
-                _self.tableView.deselectRow(at: indexPath, animated: false)
-                _self.hideCopyNotification(view: view)
-            }
-        )
-    }
-    
-    private func hideCopyNotification(view: UIView) {
-        UIView.animate(
-            withDuration: 0.2,
-            delay: 0.5,
-            options: .curveEaseIn,
-            animations: {
-                view.backgroundColor = UIColor.actionTint
-                view.alpha = 0.0
-            },
-            completion: {
-                [weak self] finished in
-                guard let _self = self else { return }
-                view.removeFromSuperview()
-                _self.tableView.allowsSelection = true
-            }
-        )
     }
 }
 
@@ -178,6 +235,17 @@ extension ViewEntryFieldsVC: ViewableFieldCellDelegate {
     func cellHeightDidChange(_ cell: ViewableFieldCell) {
         tableView.beginUpdates()
         tableView.endUpdates()
+        
+        guard let viewableField = cell.field else { return }
+        if viewableField.internalName == EntryField.notes {
+            let isCollapsed = viewableField.isHeightConstrained
+            Settings.current.isCollapseNotesField = isCollapsed
+        }
+    }
+    
+    func cellDidExpand(_ cell: ViewableFieldCell) {
+        guard let indexPath = tableView.indexPath(for: cell) else { return }
+        tableView.scrollToRow(at: indexPath, at: .top, animated: true)
     }
     
     func didTapCellValue(_ cell: ViewableFieldCell) {
@@ -186,8 +254,10 @@ extension ViewEntryFieldsVC: ViewableFieldCellDelegate {
     }
     
     func didLongTapAccessoryButton(_ cell: ViewableFieldCell) {
-        guard let value = cell.field?.value else { return }
+        guard let value = cell.field?.resolvedValue else { return }
         guard let accessoryView = cell.accessoryView else { return }
+        
+        HapticFeedback.play(.contextMenuOpened)
         
         var items: [Any] = [value]
         if value.isOpenableURL, let url = URL(string: value) {
@@ -199,5 +269,30 @@ extension ViewEntryFieldsVC: ViewableFieldCellDelegate {
             popover.sourceRect = accessoryView.bounds
         }
         present(activityVC, animated: true)
+    }
+}
+
+
+extension ViewEntryFieldsVC: FieldCopiedViewDelegate {
+    func didPressExport(in view: FieldCopiedView, field: ViewableField) {
+        guard let value = field.resolvedValue else {
+            assertionFailure()
+            return
+        }
+        view.hide(animated: true)
+
+        HapticFeedback.play(.contextMenuOpened)
+        let activityController = UIActivityViewController(
+            activityItems: [value],
+            applicationActivities: nil)
+        let popoverAnchor = PopoverAnchor(sourceView: view, sourceRect: view.bounds)
+        popoverAnchor.apply(to: activityController.popoverPresentationController)
+        present(activityController, animated: true)
+    }
+}
+
+extension ViewEntryFieldsVC: EntryFieldEditorCoordinatorDelegate {
+    func didUpdateEntry(_ entry: Entry, in coordinator: EntryFieldEditorCoordinator) {
+        refresh()
     }
 }

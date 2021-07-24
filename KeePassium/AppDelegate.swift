@@ -12,12 +12,18 @@ import LocalAuthentication
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
+    let helpURL = URL(string: "https://keepassium.com/faq")!
+
     var window: UIWindow?
     fileprivate var watchdog: Watchdog
     fileprivate var appCoverWindow: UIWindow?
     fileprivate var appLockWindow: UIWindow?
     fileprivate var biometricsBackgroundWindow: UIWindow?
     fileprivate var isBiometricAuthShown = false
+    
+    fileprivate let biometricAuthReuseDuration = TimeInterval(1.5)
+    fileprivate var lastSuccessfulBiometricAuthTime: Date = .distantPast
+    
     
     override init() {
         watchdog = Watchdog.shared 
@@ -30,11 +36,37 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
         ) -> Bool
     {
+        #if PREPAID_VERSION
+        BusinessModel.type = .prepaid
+        #else
+        BusinessModel.type = .freemium
+        #endif
         AppGroup.applicationShared = application
         SettingsMigrator.processAppLaunch(with: Settings.current)
+        SystemIssueDetector.scanForIssues()
+        Diag.info(AppInfo.description)
+        PremiumManager.shared.startObservingTransactions()
         
+        if #available(iOS 13, *) {
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("darkMode") {
+                window?.overrideUserInterfaceStyle = .dark
+            }
+        }
+
+        let rootVC = window?.rootViewController as? FileKeeperDelegate
+        assert(rootVC != nil, "FileKeeper needs a delegate")
+        FileKeeper.shared.delegate = rootVC
+
         showAppCoverScreen()
+        
+        watchdog.didBecomeActive()
+        StoreReviewSuggester.registerEvent(.sessionStart)
         return true
+    }
+    
+    func applicationWillTerminate(_ application: UIApplication) {
+        PremiumManager.shared.finishObservingTransactions()
     }
     
     func application(
@@ -48,12 +80,39 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         Diag.info("Opened with URL: \(inputURL.redacted) [inPlace: \(isOpenInPlace)]")
         
-        FileKeeper.shared.prepareToAddFile(
-            url: inputURL,
-            mode: isOpenInPlace ? .openInPlace : .import)
+        DatabaseManager.shared.closeDatabase(clearStoredKey: false, ignoreErrors: true) {
+            (fileAccessError) in
+            if inputURL.scheme != AppGroup.appURLScheme {
+                FileKeeper.shared.prepareToAddFile(
+                    url: inputURL,
+                    fileType: nil, 
+                    mode: isOpenInPlace ? .openInPlace : .import)
+            }
+        }
         
-        DatabaseManager.shared.closeDatabase(clearStoredKey: false)
         return true
+    }
+    
+    
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        switch action {
+        case #selector(showHelp(_:)):
+            return true
+        default:
+            return super.canPerformAction(action, withSender: sender)
+        }
+    }
+    
+    @objc
+    func showHelp(_ sender: Any) {
+        UIApplication.shared.open(helpURL, options: [:], completionHandler: nil)
+    }
+
+    @available(iOS 13, *)
+    override func buildMenu(with builder: UIMenuBuilder) {
+        builder.remove(menu: .file)
+        builder.remove(menu: .edit)
+        builder.remove(menu: .format)
     }
 }
 
@@ -81,18 +140,20 @@ extension AppDelegate: WatchdogDelegate {
         guard appCoverWindow == nil else { return }
         
         let _appCoverWindow = UIWindow(frame: UIScreen.main.bounds)
-        _appCoverWindow.screen = UIScreen.main
+        _appCoverWindow.setScreen(UIScreen.main)
         _appCoverWindow.windowLevel = UIWindow.Level.alert
-        let coverVC = AppCoverVC.make()
-        
-        UIView.performWithoutAnimation {
-            _appCoverWindow.rootViewController = coverVC
-            _appCoverWindow.makeKeyAndVisible()
-        }
         self.appCoverWindow = _appCoverWindow
-        print("App cover shown")
-        
-        coverVC.view.snapshotView(afterScreenUpdates: true)
+
+        let coverVC = AppCoverVC.make()
+        DispatchQueue.main.async { [_appCoverWindow, coverVC] in
+            UIView.performWithoutAnimation {
+                _appCoverWindow.rootViewController = coverVC
+                _appCoverWindow.makeKeyAndVisible()
+            }
+            print("App cover shown")
+            coverVC.view.accessibilityViewIsModal = true
+            coverVC.view.snapshotView(afterScreenUpdates: true)
+        }
     }
     
     private func hideAppCoverScreen() {
@@ -103,7 +164,7 @@ extension AppDelegate: WatchdogDelegate {
     }
     
     private var canUseBiometrics: Bool {
-        return isBiometricsAvailable() && Settings.current.isBiometricAppLockEnabled
+        return isBiometricsAvailable() && Settings.current.premiumIsBiometricAppLockEnabled
     }
     
     private func showAppLockScreen() {
@@ -117,6 +178,7 @@ extension AppDelegate: WatchdogDelegate {
     
     private func hideAppLockScreen() {
         guard isAppLockVisible else { return }
+        self.window?.makeKeyAndVisible()
         appLockWindow?.resignKey()
         appLockWindow?.isHidden = true
         appLockWindow = nil
@@ -131,12 +193,16 @@ extension AppDelegate: WatchdogDelegate {
         passcodeInputVC.isBiometricsAllowed = canUseBiometrics
         
         let _appLockWindow = UIWindow(frame: UIScreen.main.bounds)
-        _appLockWindow.screen = UIScreen.main
+        _appLockWindow.setScreen(UIScreen.main)
         _appLockWindow.windowLevel = UIWindow.Level.alert
-        UIView.performWithoutAnimation {
+        UIView.performWithoutAnimation { [weak self] in
             _appLockWindow.rootViewController = passcodeInputVC
             _appLockWindow.makeKeyAndVisible()
+            self?.window?.isHidden = true
         }
+        passcodeInputVC.view.accessibilityViewIsModal = true
+        passcodeInputVC.view.snapshotView(afterScreenUpdates: true)
+        
         self.appLockWindow = _appLockWindow
         print("passcode request shown")
     }
@@ -149,22 +215,33 @@ extension AppDelegate: WatchdogDelegate {
     
     private func performBiometricUnlock() {
         assert(isBiometricsAvailable())
-        guard Settings.current.isBiometricAppLockEnabled else { return }
+        guard Settings.current.premiumIsBiometricAppLockEnabled else { return }
         guard !isBiometricAuthShown else { return }
+        
+        let timeSinceLastSuccess = abs(Date.now.timeIntervalSince(lastSuccessfulBiometricAuthTime))
+        if timeSinceLastSuccess < biometricAuthReuseDuration {
+            print("Skipping repeated biometric prompt")
+            watchdog.unlockApp()
+            return
+        }
         
         let context = LAContext()
         let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
-        context.localizedFallbackTitle = "" // hide "Enter Password" fallback; nil won't work
+        context.localizedFallbackTitle = "" // hide "Enter (System) Password" fallback; nil won't work
+        context.localizedCancelTitle = LString.actionUsePasscode
         print("Showing biometrics request")
         
         showBiometricsBackground()
+        lastSuccessfulBiometricAuthTime = .distantPast
         context.evaluatePolicy(policy, localizedReason: LString.titleTouchID) {
             [weak self] (authSuccessful, authError) in
             DispatchQueue.main.async { [weak self] in
                 if authSuccessful {
-                    self?.watchdog.unlockApp(fromAnotherWindow: true)
+                    self?.lastSuccessfulBiometricAuthTime = Date.now
+                    self?.watchdog.unlockApp()
                 } else {
                     Diag.warning("TouchID failed [message: \(authError?.localizedDescription ?? "nil")]")
+                    self?.lastSuccessfulBiometricAuthTime = .distantPast
                     self?.showPasscodeRequest()
                 }
                 self?.hideBiometricsBackground()
@@ -178,7 +255,7 @@ extension AppDelegate: WatchdogDelegate {
         guard biometricsBackgroundWindow == nil else { return }
         
         let window = UIWindow(frame: UIScreen.main.bounds)
-        window.screen = UIScreen.main
+        window.setScreen(UIScreen.main)
         window.windowLevel = UIWindow.Level.alert + 1 
         let coverVC = AppCoverVC.make()
         
@@ -205,12 +282,18 @@ extension AppDelegate: PasscodeInputDelegate {
     func passcodeInput(_ sender: PasscodeInputVC, didEnterPasscode passcode: String) {
         do {
             if try Keychain.shared.isAppPasscodeMatch(passcode) { 
-                watchdog.unlockApp(fromAnotherWindow: false)
+                HapticFeedback.play(.appUnlocked)
+                watchdog.unlockApp()
             } else {
+                HapticFeedback.play(.wrongPassword)
                 sender.animateWrongPassccode()
+                StoreReviewSuggester.registerEvent(.trouble)
                 if Settings.current.isLockAllDatabasesOnFailedPasscode {
-                    try? Keychain.shared.removeAllDatabaseKeys()
-                    DatabaseManager.shared.closeDatabase(clearStoredKey: true)
+                    DatabaseSettingsManager.shared.eraseAllMasterKeys()
+                    DatabaseManager.shared.closeDatabase(
+                        clearStoredKey: true,
+                        ignoreErrors: true,
+                        completion: nil)
                 }
             }
         } catch {

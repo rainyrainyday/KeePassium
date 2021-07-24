@@ -13,12 +13,16 @@ public class EntryField2: EntryField {
     public var isEmpty: Bool {
         return name.isEmpty && value.isEmpty
     }
-    override init(name: String, value: String, isProtected: Bool) {
-        super.init(name: name, value: value, isProtected: isProtected)
-    }
     
     override public func clone() -> EntryField {
-        return EntryField2(name: self.name, value: self.value, isProtected: self.isProtected)
+        let clone = EntryField2(
+            name: name,
+            value: value,
+            isProtected: isProtected,
+            resolvedValue: resolvedValueInternal,
+            resolveStatus: resolveStatus
+        )
+        return clone
     }
     
     func applyProtectionFlag(from meta: Meta2) {
@@ -46,7 +50,7 @@ public class EntryField2: EntryField {
         
         
         var key: String?
-        var value: String?
+        var value: String? = ""
         var isProtected: Bool = false
         for tag in xml.children {
             switch tag.name {
@@ -59,6 +63,9 @@ public class EntryField2: EntryField {
                         Diag.verbose("Decrypting field value")
                         let plainData = try streamCipher.decrypt(data: encData, progress: nil)
                         value = plainData.toString(using: .utf8) 
+                        if value == nil {
+                            Diag.warning("Failed to decrypt field value")
+                        }
                     }
                 } else {
                     value = tag.value ?? ""
@@ -167,7 +174,6 @@ public class Entry2: Entry {
         
         func loadAssociation(xml: AEXMLElement) throws {
             assert(xml.name == Xml2.association)
-            erase()
             
             var window: String?
             var sequence: String?
@@ -247,6 +253,8 @@ public class Entry2: Entry {
     public var backgroundColor: String
     public var overrideURL: String
     public var tags: String
+    public var previousParentGroupUUID: UUID 
+    public var qualityCheck: Bool 
     public var customData: CustomData2 
     
     override init(database: Database?) {
@@ -260,7 +268,9 @@ public class Entry2: Entry {
         backgroundColor = ""
         overrideURL = ""
         tags = ""
-        customData = CustomData2()
+        previousParentGroupUUID = UUID.ZERO
+        qualityCheck = true
+        customData = CustomData2(database: database)
         super.init(database: database)
     }
     deinit {
@@ -278,36 +288,46 @@ public class Entry2: Entry {
         backgroundColor.erase()
         overrideURL.erase()
         tags.erase()
+        previousParentGroupUUID.erase()
+        qualityCheck = true
         customData.erase()
         super.erase()
     }
     
-    override public func clone() -> Entry {
+    override public func clone(makeNewUUID: Bool) -> Entry {
         let newEntry = Entry2(database: self.database)
-        self.apply(to: newEntry)
+        self.apply(to: newEntry, makeNewUUID: makeNewUUID)
         
         
         return newEntry
     }
 
-    func apply(to target: Entry2) {
-        super.apply(to: target)
-        target.customIconUUID = self.customIconUUID
-        target.foregroundColor = self.foregroundColor
-        target.backgroundColor = self.backgroundColor
-        target.overrideURL = self.overrideURL
-        target.tags = self.tags
+    override public func apply(to target: Entry, makeNewUUID: Bool) {
+        super.apply(to: target, makeNewUUID: makeNewUUID)
+        guard let targetEntry2 = target as? Entry2 else {
+            Diag.warning("Tried to apply entry state to unexpected entry class")
+            assertionFailure()
+            return
+        }
+        targetEntry2.customIconUUID = self.customIconUUID
+        targetEntry2.foregroundColor = self.foregroundColor
+        targetEntry2.backgroundColor = self.backgroundColor
+        targetEntry2.overrideURL = self.overrideURL
+        targetEntry2.tags = self.tags
         
-        target.autoType = self.autoType.clone()
+        targetEntry2.autoType = self.autoType.clone()
         
-        target.canExpire = self.canExpire
-        target.usageCount = self.usageCount
-        target.locationChangedTime = self.locationChangedTime
-        target.customData = self.customData.clone()
+        targetEntry2.canExpire = self.canExpire
+        targetEntry2.usageCount = self.usageCount
+        targetEntry2.locationChangedTime = self.locationChangedTime
+        targetEntry2.previousParentGroupUUID = self.previousParentGroupUUID
+        targetEntry2.qualityCheck = self.qualityCheck
+        targetEntry2.customData = self.customData.clone()
 
-        target.history.removeAll()
+        targetEntry2.history.removeAll()
         for histEntry in history {
-            target.history.append(histEntry.clone() as! Entry2)
+            let histEntryClone = histEntry.clone(makeNewUUID: makeNewUUID) as! Entry2
+            targetEntry2.history.append(histEntryClone)
         }
     }
     
@@ -344,35 +364,30 @@ public class Entry2: Entry {
     
     
     override public func backupState() {
-        let entryClone = self.clone() as! Entry2
+        let entryClone = self.clone(makeNewUUID: false) as! Entry2
         entryClone.clearHistory()
         addToHistory(entry: entryClone)
         maintainHistorySize()
     }
 
-    override public func accessed() {
-        super.accessed()
+    override public func touch(_ mode: DatabaseItem.TouchMode, updateParents: Bool = true) {
         usageCount += 1
+        super.touch(mode, updateParents: updateParents)
     }
     
-    override public func matches(query: SearchQuery) -> Bool {
-        if super.matches(query: query) {
-            return true
-        }
-        for field in fields {
-            if field.matches(query: query) {
-                return true
-            }
-        }
-        return false
+    override public func move(to newGroup: Group) {
+        previousParentGroupUUID = parent?.uuid ?? UUID.ZERO
+        super.move(to: newGroup)
+        locationChangedTime = Date.now
     }
     
     func load(
         xml: AEXMLElement,
+        formatVersion: Database2.FormatVersion,
         streamCipher: StreamCipher,
+        timeParser: Database2XMLTimeParser,
         warnings: DatabaseLoadingWarnings
-        ) throws
-    {
+    ) throws {
         assert(xml.name == Xml2.entry)
         Diag.verbose("Loading XML: entry")
         
@@ -409,6 +424,10 @@ public class Entry2: Entry {
                     setField(name: field.name, value: field.value, isProtected: field.isProtected)
                 }
             case Xml2.binary:
+                guard !tag.children.isEmpty else {
+                    Diag.warning("Skipping an empty Binary tag")
+                    continue
+                }
                 let att = try Attachment2.load(
                     xml: tag,
                     database: database as! Database2,
@@ -416,16 +435,33 @@ public class Entry2: Entry {
                 attachments.append(att)
                 Diag.verbose("Entry attachment loaded OK")
             case Xml2.times:
-                try loadTimes(xml: tag)
+                try loadTimes(xml: tag, timeParser: timeParser)
                 Diag.verbose("Entry times loaded OK")
             case Xml2.autoType:
                 try autoType.load(xml: tag, streamCipher: streamCipher)
                 Diag.verbose("Entry autotype loaded OK")
+            case Xml2.previousParentGroup:
+                assert(formatVersion >= .v4_1)
+                previousParentGroupUUID = UUID(base64Encoded: tag.value) ?? UUID.ZERO
+            case Xml2.qualityCheck:
+                assert(formatVersion >= .v4_1)
+                qualityCheck = Bool(optString: tag.value) ?? true
             case Xml2.customData: 
-                try customData.load(xml: tag, streamCipher: streamCipher, xmlParentName: "Entry")
+                assert(formatVersion >= .v4)
+                try customData.load(
+                    xml: tag,
+                    streamCipher: streamCipher,
+                    timeParser: timeParser,
+                    xmlParentName: "Entry")
                 Diag.verbose("Entry custom data loaded OK")
             case Xml2.history:
-                try loadHistory(xml: tag, streamCipher: streamCipher, warnings: warnings)
+                try loadHistory(
+                    xml: tag,
+                    formatVersion: formatVersion,
+                    streamCipher: streamCipher,
+                    timeParser: timeParser,
+                    warnings: warnings
+                ) 
                 Diag.verbose("Entry history loaded OK")
             default:
                 Diag.error("Unexpected XML tag in Entry: \(tag.name)")
@@ -434,16 +470,15 @@ public class Entry2: Entry {
         }
     }
     
-    func loadTimes(xml: AEXMLElement) throws {
+    func loadTimes(xml: AEXMLElement, timeParser: Database2XMLTimeParser) throws {
         assert(xml.name == Xml2.times)
         Diag.verbose("Loading XML: entry times")
-        let db = database as! Database2
         
         var optionalExpiryTime: Date?
         for tag in xml.children {
             switch tag.name {
             case Xml2.lastModificationTime:
-                guard let time = db.xmlStringToDate(tag.value) else {
+                guard let time = timeParser.xmlStringToDate(tag.value) else {
                     Diag.error("Cannot parse Entry/Times/LastModificationTime as Date")
                      throw Xml2.ParsingError.malformedValue(
                         tag: "Entry/Times/LastModificationTime",
@@ -451,7 +486,7 @@ public class Entry2: Entry {
                 }
                 lastModificationTime = time
             case Xml2.creationTime:
-                guard let time = db.xmlStringToDate(tag.value) else {
+                guard let time = timeParser.xmlStringToDate(tag.value) else {
                     Diag.error("Cannot parse Entry/Times/CreationTime as Date")
                     throw Xml2.ParsingError.malformedValue(
                         tag: "Entry/Times/CreationTime",
@@ -459,7 +494,7 @@ public class Entry2: Entry {
                 }
                 creationTime = time
             case Xml2.lastAccessTime:
-                guard let time = db.xmlStringToDate(tag.value) else {
+                guard let time = timeParser.xmlStringToDate(tag.value) else {
                     Diag.error("Cannot parse Entry/Times/LastAccessTime as Date")
                     throw Xml2.ParsingError.malformedValue(
                         tag: "Entry/Times/LastAccessTime",
@@ -472,7 +507,7 @@ public class Entry2: Entry {
                     optionalExpiryTime = nil 
                     continue
                 }
-                guard let time = db.xmlStringToDate(tagValue) else {
+                guard let time = timeParser.xmlStringToDate(tagValue) else {
                     Diag.error("Cannot parse Entry/Times/ExpiryTime as Date")
                     throw Xml2.ParsingError.malformedValue(
                         tag: "Entry/Times/ExpiryTime",
@@ -484,7 +519,7 @@ public class Entry2: Entry {
             case Xml2.usageCount:
                 usageCount = UInt32(tag.value) ?? 0
             case Xml2.locationChanged:
-                guard let time = db.xmlStringToDate(tag.value) else {
+                guard let time = timeParser.xmlStringToDate(tag.value) else {
                     Diag.error("Cannot parse Entry/Times/LocationChanged as Date")
                     throw Xml2.ParsingError.malformedValue(
                         tag: "Entry/Times/LocationChanged",
@@ -513,7 +548,9 @@ public class Entry2: Entry {
 
     func loadHistory(
         xml: AEXMLElement,
+        formatVersion: Database2.FormatVersion,
         streamCipher: StreamCipher,
+        timeParser: Database2XMLTimeParser,
         warnings: DatabaseLoadingWarnings
         ) throws
     {
@@ -523,7 +560,13 @@ public class Entry2: Entry {
             switch tag.name {
             case Xml2.entry:
                 let histEntry = Entry2(database: database)
-                try histEntry.load(xml: tag, streamCipher: streamCipher, warnings: warnings)
+                try histEntry.load(
+                    xml: tag,
+                    formatVersion: formatVersion,
+                    streamCipher: streamCipher,
+                    timeParser: timeParser,
+                    warnings: warnings
+                ) 
                 history.append(histEntry)
                 Diag.verbose("Entry history item loaded OK")
             default:
@@ -533,10 +576,13 @@ public class Entry2: Entry {
         }
     }
     
-    func toXml(streamCipher: StreamCipher) throws -> AEXMLElement {
+    func toXml(
+        formatVersion: Database2.FormatVersion,
+        streamCipher: StreamCipher,
+        timeFormatter: Database2XMLTimeFormatter
+    ) throws -> AEXMLElement {
         Diag.verbose("Generating XML: entry")
-        let db2 = database as! Database2
-        let meta: Meta2 = db2.meta
+        let meta: Meta2 = (database as! Database2).meta
         
         let xmlEntry = AEXMLElement(name: Xml2.entry)
         xmlEntry.addChild(name: Xml2.uuid, value: uuid.base64EncodedString())
@@ -554,16 +600,16 @@ public class Entry2: Entry {
         let xmlTimes = AEXMLElement(name: Xml2.times)
         xmlTimes.addChild(
             name: Xml2.creationTime,
-            value: db2.xmlDateToString(creationTime))
+            value: timeFormatter.dateToXMLString(creationTime))
         xmlTimes.addChild(
             name: Xml2.lastModificationTime,
-            value: db2.xmlDateToString(lastModificationTime))
+            value: timeFormatter.dateToXMLString(lastModificationTime))
         xmlTimes.addChild(
             name: Xml2.lastAccessTime,
-            value: db2.xmlDateToString(lastAccessTime))
+            value: timeFormatter.dateToXMLString(lastAccessTime))
         xmlTimes.addChild(
             name: Xml2.expiryTime,
-            value: db2.xmlDateToString(expiryTime))
+            value: timeFormatter.dateToXMLString(expiryTime))
         xmlTimes.addChild(
             name: Xml2.expires,
             value: canExpire ? Xml2._true : Xml2._false)
@@ -572,7 +618,7 @@ public class Entry2: Entry {
             value: String(usageCount))
         xmlTimes.addChild(
             name: Xml2.locationChanged,
-            value: db2.xmlDateToString(locationChangedTime))
+            value: timeFormatter.dateToXMLString(locationChangedTime))
         xmlEntry.addChild(xmlTimes)
         
         for field in fields {
@@ -585,14 +631,32 @@ public class Entry2: Entry {
         }
         xmlEntry.addChild(autoType.toXml())
         
-        if db2.header.formatVersion == .v4 && !customData.isEmpty{
-            xmlEntry.addChild(customData.toXml())
+        if formatVersion >= .v4_1 {
+            if previousParentGroupUUID != UUID.ZERO {
+                xmlEntry.addChild(
+                    name: Xml2.previousParentGroup,
+                    value: previousParentGroupUUID.base64EncodedString()
+                )
+            }
+            if !qualityCheck {
+                xmlEntry.addChild(name: Xml2.qualityCheck, value: Xml2._false)
+            }
+        }
+        
+        if formatVersion >= .v4 && !customData.isEmpty{
+            xmlEntry.addChild(customData.toXml(timeFormatter: timeFormatter))
         }
         
         if !history.isEmpty {
             let xmlHistory = xmlEntry.addChild(name: Xml2.history)
             for histEntry in history {
-                xmlHistory.addChild(try histEntry.toXml(streamCipher: streamCipher))
+                xmlHistory.addChild(
+                    try histEntry.toXml(
+                        formatVersion: formatVersion,
+                        streamCipher: streamCipher,
+                        timeFormatter: timeFormatter
+                    )
+                )
             }
         }
         return xmlEntry

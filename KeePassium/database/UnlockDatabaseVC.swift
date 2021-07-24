@@ -13,7 +13,7 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     @IBOutlet private weak var databaseNameLabel: UILabel!
     @IBOutlet private weak var inputPanel: UIView!
     @IBOutlet private weak var passwordField: UITextField!
-    @IBOutlet private weak var keyFileField: UITextField!
+    @IBOutlet private weak var keyFileField: KeyFileTextField!
     @IBOutlet private weak var keyboardAdjView: UIView!
     @IBOutlet private weak var errorMessagePanel: UIView!
     @IBOutlet private weak var errorLabel: UILabel!
@@ -21,6 +21,8 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     @IBOutlet private weak var watchdogTimeoutLabel: UILabel!
     @IBOutlet private weak var databaseIconImage: UIImageView!
     @IBOutlet weak var masterKeyKnownLabel: UILabel!
+    @IBOutlet weak var lockDatabaseButton: UIButton!
+    @IBOutlet weak var announcementButton: UIButton!
     
     public var databaseRef: URLReference! {
         didSet {
@@ -31,13 +33,29 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     }
     
     private var keyFileRef: URLReference?
-    private var databaseManagerNotifications: DatabaseManagerNotifications!
+    private var yubiKey: YubiKey?
     private var fileKeeperNotifications: FileKeeperNotifications!
+    
+    private var canUseFinalKey = true
+    
+    var isJustLaunched = false 
+    var isAutoUnlockEnabled = true
+    fileprivate var isAutomaticUnlock = false
 
+    private var diagnosticsViewerCoordinator: DiagnosticsViewerCoordinator?
+    private var keyFilePickerCoordinator: KeyFilePickerCoordinator?
+    
+    private var isViewAppeared = false
+    
     static func make(databaseRef: URLReference) -> UnlockDatabaseVC {
         let vc = UnlockDatabaseVC.instantiateFromStoryboard()
         vc.databaseRef = databaseRef
         return vc
+    }
+    
+    deinit {
+        diagnosticsViewerCoordinator = nil
+        keyFilePickerCoordinator = nil
     }
     
     override func viewDidLoad() {
@@ -46,33 +64,57 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
         passwordField.delegate = self
         keyFileField.delegate = self
         
-        databaseManagerNotifications = DatabaseManagerNotifications(observer: self)
         fileKeeperNotifications = FileKeeperNotifications(observer: self)
 
         view.backgroundColor = UIColor(patternImage: UIImage(asset: .backgroundPattern))
         view.layer.isOpaque = false
-        
+
         watchdogTimeoutLabel.alpha = 0.0
         errorMessagePanel.alpha = 0.0
+        errorMessagePanel.isHidden = true
+        
+        keyFileField.yubikeyHandler = {
+            [weak self] (field) in
+            guard let self = self else { return }
+            let popoverAnchor = PopoverAnchor(
+                sourceView: self.keyFileField,
+                sourceRect: self.keyFileField.bounds)
+            self.showHardwareKeyPicker(at: popoverAnchor)
+        }
 
         passwordField.inputAssistantItem.leadingBarButtonGroups = []
         passwordField.inputAssistantItem.trailingBarButtonGroups = []
         
         let lockDatabaseButton = UIBarButtonItem(
-            title: NSLocalizedString("Close", comment: "Button to close currently opened database, when leaving the root group"),
+            title: LString.actionCloseDatabase,
             style: .plain,
             target: nil,
             action: nil)
         navigationItem.backBarButtonItem = lockDatabaseButton
+        
+        refreshNews()
     }
     
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         refresh()
+        if isMovingToParent && canAutoUnlock() {
+            showProgressOverlay(animated: false)
+        }
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        guard !isViewAppeared else {
+            Diag.warning("Unbalanced call to viewDidAppear, ignoring")
+            assertionFailure("Unbalanced call to viewDidAppear")
+            return
+        }
+        isViewAppeared = true
+
+        let premiumManager = PremiumManager.shared
+        canUseFinalKey = canUseFinalKey && premiumManager.isAvailable(feature: .canUseExpressUnlock)
+
         fileKeeperNotifications.startObserving()
         NotificationCenter.default.addObserver(
             self,
@@ -81,6 +123,15 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
             object: nil)
         onAppDidBecomeActive()
         
+        if isMovingToParent && canAutoUnlock() {
+            DispatchQueue.main.async { [weak self] in
+                self?.tryToUnlockDatabase(isAutomaticUnlock: true)
+            }
+        } else {
+            hideProgressOverlay(quickly: true)
+            refreshInputMode()
+        }
+
         if FileKeeper.shared.hasPendingFileOperations {
             processPendingFileOperations()
         }
@@ -94,6 +145,7 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
         } else {
             hideWatchdogTimeoutMessage(animated: false)
         }
+        refreshInputMode()
     }
     
     override func viewWillDisappear(_ animated: Bool) {
@@ -103,6 +155,7 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
             object: nil)
         fileKeeperNotifications.stopObserving()
         super.viewWillDisappear(animated)
+        isViewAppeared = false
     }
     
     override func didReceiveMemoryWarning() {
@@ -113,32 +166,42 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     func refresh() {
         guard isViewLoaded else { return }
         
-        databaseIconImage.image = UIImage.databaseIcon(for: databaseRef)
-        databaseNameLabel.text = databaseRef.info.fileName
-        if databaseRef.info.hasError {
-            showErrorMessage(databaseRef.info.errorMessage)
+        databaseIconImage.image = databaseRef.getIcon(fileType: .database)
+        databaseNameLabel.text = databaseRef.visibleFileName
+        if databaseRef.hasError {
+            let text = databaseRef.error?.localizedDescription
+            if databaseRef.hasPermissionError257 || databaseRef.hasFileMissingError {
+                showErrorMessage(text, suggestion: LString.tryToReAddFile)
+            } else {
+                showErrorMessage(text)
+            }
         }
         
-        let settings = Settings.current
-        if let associatedKeyFileRef = settings.getKeyFileForDatabase(databaseRef: databaseRef) {
+        let dbSettings = DatabaseSettingsManager.shared.getSettings(for: databaseRef)
+        if let associatedKeyFileRef = dbSettings?.associatedKeyFile {
             let allAvailableKeyFiles = FileKeeper.shared
                 .getAllReferences(fileType: .keyFile, includeBackup: false)
             if let availableKeyFileRef = associatedKeyFileRef
                 .find(in: allAvailableKeyFiles, fallbackToNamesake: true)
             {
-                setKeyFile(urlRef: availableKeyFileRef)
+                setKeyFile(availableKeyFileRef)
             }
         }
-        
+        if let associatedYubiKey = dbSettings?.associatedYubiKey {
+            setYubiKey(associatedYubiKey)
+        }
+        refreshNews()
         refreshInputMode()
     }
     
-    
     private func refreshInputMode() {
-        let isDatabaseKeyStored = try? DatabaseManager.shared.hasKey(for: databaseRef)
+        let dbSettings = DatabaseSettingsManager.shared.getSettings(for: databaseRef)
+        let isDatabaseKeyStored = dbSettings?.hasMasterKey ?? false
+        Diag.verbose("isDatabaseKeyStored: \(isDatabaseKeyStored)")
         
-        let shouldInputMasterKey = !(isDatabaseKeyStored ?? false)
+        let shouldInputMasterKey = !isDatabaseKeyStored
         masterKeyKnownLabel.isHidden = shouldInputMasterKey
+        lockDatabaseButton.isHidden = masterKeyKnownLabel.isHidden
         inputPanel.isHidden = !shouldInputMasterKey
     }
 
@@ -148,31 +211,83 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
         }
     }
     
-
-    func showErrorMessage(_ message: String?, details: String?=nil) {
-        guard let message = message else { return }
-        
-        if let details = details {
-            errorLabel.text = " \(message)\n\(details) "
-        } else {
-            errorLabel.text = message
+    private func clearPasswordField() {
+        passwordField.text = ""
+    }
+    
+    
+    func showHardwareKeyPicker(at popoverAnchor: PopoverAnchor) {
+        let hardwareKeyPicker = HardwareKeyPicker.create(delegate: self)
+        hardwareKeyPicker.modalPresentationStyle = .popover
+        if let popover = hardwareKeyPicker.popoverPresentationController {
+            popoverAnchor.apply(to: popover)
+            popover.delegate = hardwareKeyPicker.dismissablePopoverDelegate
         }
+        hardwareKeyPicker.key = yubiKey
+        present(hardwareKeyPicker, animated: true, completion: nil)
+    }
+    
+    
+    
+    private var newsItem: NewsItem?
+    
+    private func refreshNews() {
+        let nc = NewsCenter.shared
+        if let newsItem = nc.getTopItem() {
+            announcementButton.titleLabel?.numberOfLines = 0
+            announcementButton.setTitle(newsItem.title, for: .normal)
+            announcementButton.isHidden = false
+            self.newsItem = newsItem
+        } else {
+            announcementButton.isHidden = true
+            self.newsItem = nil
+        }
+    }
+
+    @IBAction func didPressAnouncementButton(_ sender: Any) {
+        newsItem?.show(in: self)
+    }
+    
+
+    func showErrorMessage(
+        _ text: String?,
+        details: String?=nil,
+        suggestion: String?=nil,
+        haptics: HapticFeedback.Kind?=nil
+    ) {
+        guard let text = text else { return }
+        let message = [text, details, suggestion]
+            .compactMap{ return $0 }
+            .joined(separator: "\n")
+        errorLabel.text = message
+        Diag.error(message)
+        UIAccessibility.post(notification: .layoutChanged, argument: errorLabel)
+        
+        guard errorMessagePanel.isHidden else { return }
+        
         UIView.animate(
             withDuration: 0.3,
             delay: 0.0,
             options: .curveEaseIn,
             animations: {
                 [weak self] in
+                self?.errorMessagePanel.isHidden = false
                 self?.errorMessagePanel.alpha = 1.0
             },
             completion: {
                 [weak self] (finished) in
                 self?.errorMessagePanel.shake()
+                if let hapticsKind = haptics {
+                    HapticFeedback.play(hapticsKind)
+                }
             }
         )
+        StoreReviewSuggester.registerEvent(.trouble)
     }
     
     func hideErrorMessage(animated: Bool) {
+        guard !errorMessagePanel.isHidden else { return }
+
         if animated {
             UIView.animate(
                 withDuration: 0.3,
@@ -181,6 +296,7 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
                 animations: {
                     [weak self] in
                     self?.errorMessagePanel.alpha = 0.0
+                    self?.errorMessagePanel.isHidden = true
                 },
                 completion: {
                     [weak self] (finished) in
@@ -220,14 +336,29 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
             watchdogTimeoutLabel.alpha = 0.0
         }
     }
+    
+    func showDiagnostics() {
+        assert(diagnosticsViewerCoordinator == nil)
+        let modalRouter = NavigationRouter.createModal(style: .formSheet)
+        diagnosticsViewerCoordinator = DiagnosticsViewerCoordinator(router: modalRouter)
+        diagnosticsViewerCoordinator!.dismissHandler = { [weak self] coordinator in
+            self?.diagnosticsViewerCoordinator = nil
+        }
+        diagnosticsViewerCoordinator!.start()
+        present(modalRouter, animated: true, completion: nil)
+    }
 
     private var progressOverlay: ProgressOverlay?
-    fileprivate func showProgressOverlay() {
+    fileprivate func showProgressOverlay(animated: Bool) {
+        guard progressOverlay == nil else { return }
         progressOverlay = ProgressOverlay.addTo(
             keyboardAdjView,
             title: LString.databaseStatusLoading,
-            animated: true)
+            animated: animated)
         progressOverlay?.isCancellable = true
+        progressOverlay?.unresponsiveCancelHandler = { [weak self] in
+            self?.showDiagnostics()
+        }
         
         if let leftNavController = splitViewController?.viewControllers.first as? UINavigationController,
             let chooseDatabaseVC = leftNavController.topViewController as? ChooseDatabaseVC {
@@ -236,10 +367,10 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
         navigationItem.hidesBackButton = true
     }
     
-    fileprivate func hideProgressOverlay() {
+    fileprivate func hideProgressOverlay(quickly: Bool) {
         UIView.animateKeyframes(
-            withDuration: 0.2,
-            delay: 0.0,
+            withDuration: quickly ? 0.2 : 0.6,
+            delay: quickly ? 0.0 : 0.6,
             options: [.beginFromCurrentState],
             animations: {
                 [weak self] in
@@ -266,42 +397,89 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
     func selectKeyFileAction(_ sender: Any) {
         Diag.verbose("Selecting key file")
         hideErrorMessage(animated: true)
-        let keyFileChooser = ChooseKeyFileVC.make(popoverSourceView: keyFileField, delegate: self)
-        present(keyFileChooser, animated: true, completion: nil)
+
+        guard keyFilePickerCoordinator == nil else {
+            assertionFailure()
+            Diag.debug("Key file picker already shown")
+            return
+        }
+
+        let popoverAnchor = PopoverAnchor(
+            sourceView: keyFileField,
+            sourceRect: keyFileField.bounds
+        )
+        let modalRouter = NavigationRouter.createModal(style: .pageSheet, at: popoverAnchor)
+        keyFilePickerCoordinator = KeyFilePickerCoordinator(router: modalRouter, addingMode: .import)
+        keyFilePickerCoordinator!.dismissHandler = { [weak self] coordinator in
+            self?.keyFilePickerCoordinator = nil
+        }
+        keyFilePickerCoordinator!.delegate = self
+        keyFilePickerCoordinator!.start()
+        present(modalRouter, animated: true, completion: nil)
     }
     
     
     @IBAction func didPressErrorDetails(_ sender: Any) {
-        let diagInfoVC = ViewDiagnosticsVC.make()
-        present(diagInfoVC, animated: true, completion: nil)
+        showDiagnostics()
     }
     
     @IBAction func didPressUnlock(_ sender: Any) {
-        tryToUnlockDatabase()
+        tryToUnlockDatabase(isAutomaticUnlock: false)
+    }
+    
+    @IBAction func didPressLockDatabase(_ sender: Any) {
+        DatabaseSettingsManager.shared.updateSettings(for: databaseRef) {
+            $0.clearMasterKey()
+        }
+        refreshInputMode()
     }
     
     
-    func tryToUnlockDatabase() {
+    func canAutoUnlock() -> Bool {
+        guard isAutoUnlockEnabled &&
+            Settings.current.isAutoUnlockStartupDatabase &&
+            !FileKeeper.shared.hasPendingFileOperations else
+        {
+            return false
+        }
+        guard let splitVC = splitViewController, splitVC.isCollapsed else { return isJustLaunched }
+        
+        let dbSettings = DatabaseSettingsManager.shared.getSettings(for: databaseRef)
+        let hasKey = dbSettings?.hasMasterKey ?? false
+        Diag.verbose("canAutoUnlock: \(hasKey)")
+        return hasKey
+    }
+    
+    func tryToUnlockDatabase(isAutomaticUnlock: Bool) {
         Diag.clear()
+        Diag.verbose("Will try to unlock database [automatically: \(isAutomaticUnlock)]")
+        self.isAutomaticUnlock = isAutomaticUnlock
         let password = passwordField.text ?? ""
         passwordField.resignFirstResponder()
         hideWatchdogTimeoutMessage(animated: true)
-        databaseManagerNotifications.startObserving()
+        DatabaseManager.shared.addObserver(self)
         
-        do {
-            if let databaseKey = try Keychain.shared.getDatabaseKey(databaseRef: databaseRef) {
-                DatabaseManager.shared.startLoadingDatabase(
-                    database: databaseRef,
-                    compositeKey: databaseKey)
-            } else {
-                DatabaseManager.shared.startLoadingDatabase(
-                    database: databaseRef,
-                    password: password,
-                    keyFile: keyFileRef)
+        let _challengeHandler = ChallengeResponseManager.makeHandler(for: yubiKey)
+        let dbSettings = DatabaseSettingsManager.shared.getSettings(for: databaseRef)
+        if let databaseKey = dbSettings?.masterKey {
+            databaseKey.challengeHandler = _challengeHandler
+            DatabaseManager.shared.startLoadingDatabase(
+                database: databaseRef,
+                compositeKey: databaseKey,
+                canUseFinalKey: canUseFinalKey)
+        } else {
+            canUseFinalKey = false 
+            guard !isAutomaticUnlock else {
+                Diag.debug("Aborting auto-unlock, there is no stored key")
+                refreshInputMode()
+                hideProgressOverlay(quickly: true)
+                return
             }
-        } catch {
-            Diag.error(error.localizedDescription)
-            showErrorMessage(error.localizedDescription)
+            DatabaseManager.shared.startLoadingDatabase(
+                database: databaseRef,
+                password: password,
+                keyFile: keyFileRef,
+                challengeHandler: _challengeHandler)
         }
     }
     
@@ -311,45 +489,93 @@ class UnlockDatabaseVC: UIViewController, Refreshable {
             return
         }
         let viewGroupVC = ViewGroupVC.make(group: database.root, loadingWarnings: loadingWarnings)
-        guard let leftNavController =
-            splitViewController?.viewControllers.first as? UINavigationController else
+        guard let splitVC = splitViewController,
+            let firstVC = splitVC.viewControllers.first,
+            let leftNavController = firstVC as? UINavigationController else
         {
+            let splitVC = splitViewController
+            let firstVC = splitViewController?.viewControllers.first
+            Diag.writeToPersistentLog("splitVC: \(splitVC.debugDescription)\nfirstVC: \(firstVC.debugDescription)")
+            
             fatalError("No leftNavController?!")
         }
-        leftNavController.show(viewGroupVC, sender: self)
+        if leftNavController.topViewController is UnlockDatabaseVC {
+            var viewControllers = leftNavController.viewControllers
+            viewControllers[viewControllers.count - 1] = viewGroupVC
+            leftNavController.setViewControllers(viewControllers, animated: true)
+        } else {
+            leftNavController.show(viewGroupVC, sender: self)
+        }
     }
 }
 
-extension UnlockDatabaseVC: KeyFileChooserDelegate {
-    func setKeyFile(urlRef: URLReference?) {
-        keyFileRef = urlRef
-        Settings.current.setKeyFileForDatabase(databaseRef: databaseRef, keyFileRef: keyFileRef)
+extension UnlockDatabaseVC: HardwareKeyPickerDelegate {
+    func didDismiss(_ picker: HardwareKeyPicker) {
+    }
+    
+    func didSelectKey(yubiKey: YubiKey?, in picker: HardwareKeyPicker) {
+        setYubiKey(yubiKey)
+    }
+    
+    func setYubiKey(_ yubiKey: YubiKey?) {
+        self.yubiKey = yubiKey
+        keyFileField.isYubiKeyActive = (yubiKey != nil)
 
-        guard let fileInfo = urlRef?.info else {
+        DatabaseSettingsManager.shared.updateSettings(for: databaseRef) { (dbSettings) in
+            dbSettings.maybeSetAssociatedYubiKey(yubiKey)
+        }
+        if let _yubiKey = yubiKey {
+            Diag.info("Hardware key selected [key: \(_yubiKey)]")
+        } else {
+            Diag.info("No hardware key selected")
+        }
+    }
+}
+
+
+extension UnlockDatabaseVC: KeyFilePickerCoordinatorDelegate {
+    func didRemoveOrDeleteKeyFile(in coordinator: KeyFilePickerCoordinator, keyFile: URLReference) {
+        if self.keyFileRef == keyFile {
+            setKeyFile(nil)
+        }
+    }
+    
+    func didPickKeyFile(in coordinator: KeyFilePickerCoordinator, keyFile: URLReference?) {
+        setKeyFile(keyFile)
+    }
+    
+    func setKeyFile(_ fileRef: URLReference?) {
+        self.keyFileRef = fileRef
+        DatabaseSettingsManager.shared.updateSettings(for: databaseRef) { (dbSettings) in
+            dbSettings.maybeSetAssociatedKeyFile(keyFileRef)
+        }
+
+        guard let keyFileRef = keyFileRef else {
             Diag.debug("No key file selected")
             keyFileField.text = ""
             return
         }
-        if let errorDetails = fileInfo.errorMessage {
-            let errorMessage = NSLocalizedString("Key file error: \(errorDetails)", comment: "Error message related to key file")
+        if let errorDetails = keyFileRef.error?.localizedDescription {
+            let errorMessage = String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "[Database/Unlock] Key file error: %@",
+                    value: "Key file error: %@",
+                    comment: "Error message related to key file. [errorDetails: String]"),
+                errorDetails)
             Diag.warning(errorMessage)
             showErrorMessage(errorMessage)
             keyFileField.text = ""
         } else {
             Diag.info("Key file set successfully")
-            keyFileField.text = fileInfo.fileName
+            keyFileField.text = keyFileRef.visibleFileName
         }
-    }
-    
-    func onKeyFileSelected(urlRef: URLReference?) {
-        setKeyFile(urlRef: urlRef)
     }
 }
 
 extension UnlockDatabaseVC: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         if textField == self.passwordField {
-            tryToUnlockDatabase()
+            tryToUnlockDatabase(isAutomaticUnlock: false)
         }
         return true
     }
@@ -372,23 +598,23 @@ extension UnlockDatabaseVC: UITextFieldDelegate {
         }
         return true
     }
-    
-    func textFieldDidBeginEditing(_ textField: UITextField) {
-    }
 }
 
 
 extension UnlockDatabaseVC: DatabaseManagerObserver {
     func databaseManager(willLoadDatabase urlRef: URLReference) {
-        self.passwordField.text = "" 
-        showProgressOverlay()
+        showProgressOverlay(animated: true)
     }
     
     func databaseManager(database urlRef: URLReference, isCancelled: Bool) {
-        databaseManagerNotifications.stopObserving()
-        try? Keychain.shared.removeDatabaseKey(databaseRef: urlRef) 
+        DatabaseManager.shared.removeObserver(self)
+        DatabaseSettingsManager.shared.updateSettings(for: urlRef) { (dbSettings) in
+            dbSettings.clearMasterKey()
+        }
+        
         refresh()
-        hideProgressOverlay()
+        clearPasswordField()
+        hideProgressOverlay(quickly: true)
         maybeFocusOnPassword()
     }
     
@@ -397,39 +623,56 @@ extension UnlockDatabaseVC: DatabaseManagerObserver {
     }
     
     func databaseManager(database urlRef: URLReference, invalidMasterKey message: String) {
-        databaseManagerNotifications.stopObserving()
-        try? Keychain.shared.removeDatabaseKey(databaseRef: urlRef) 
-        refresh()
-        hideProgressOverlay()
-        showErrorMessage(message)
-        maybeFocusOnPassword()
+        DatabaseManager.shared.removeObserver(self)
+        if canUseFinalKey {
+            Diag.info("Express unlock failed, retrying slow")
+            canUseFinalKey = false
+            tryToUnlockDatabase(isAutomaticUnlock: isAutomaticUnlock)
+        } else {
+            DatabaseSettingsManager.shared.updateSettings(for: urlRef) { (dbSettings) in
+                dbSettings.clearMasterKey()
+            }
+            refresh()
+            hideProgressOverlay(quickly: true)
+            
+            showErrorMessage(message, haptics: .wrongPassword)
+            maybeFocusOnPassword()
+        }
     }
     
     func databaseManager(didLoadDatabase urlRef: URLReference, warnings: DatabaseLoadingWarnings) {
-        databaseManagerNotifications.stopObserving()
-        hideProgressOverlay()
+        DatabaseManager.shared.removeObserver(self)
         
+        HapticFeedback.play(.databaseUnlocked)
         
         if Settings.current.isRememberDatabaseKey {
             do {
                 try DatabaseManager.shared.rememberDatabaseKey() 
             } catch {
                 Diag.error("Failed to remember database key [message: \(error.localizedDescription)]")
-                let errorAlert = UIAlertController.make(
-                    title: LString.titleKeychainError,
-                    message: error.localizedDescription)
-                present(errorAlert, animated: true, completion: nil)
             }
         }
+        clearPasswordField()
+        hideProgressOverlay(quickly: false)
         showDatabaseRoot(loadingWarnings: warnings)
     }
 
     func databaseManager(database urlRef: URLReference, loadingError message: String, reason: String?) {
-        databaseManagerNotifications.stopObserving()
-        try? Keychain.shared.removeDatabaseKey(databaseRef: urlRef) 
+        DatabaseManager.shared.removeObserver(self)
         refresh()
-        hideProgressOverlay()
-        showErrorMessage(message, details: reason)
+        hideProgressOverlay(quickly: true)
+        
+        isAutoUnlockEnabled = false
+        if databaseRef.hasPermissionError257 || databaseRef.hasFileMissingError {
+            showErrorMessage(
+                message,
+                details: reason,
+                suggestion: LString.tryToReAddFile,
+                haptics: .error
+            )
+        } else {
+            showErrorMessage(message, details: reason, haptics: .error)
+        }
         maybeFocusOnPassword()
     }
 }
@@ -442,19 +685,16 @@ extension UnlockDatabaseVC: FileKeeperObserver {
     }
 
     func fileKeeperHasPendingOperation() {
-        processPendingFileOperations()
+        if isViewLoaded {
+            processPendingFileOperations()
+        }
     }
 
     private func processPendingFileOperations() {
         FileKeeper.shared.processPendingOperations(
             success: nil,
-            error: {
-                [weak self] (error) in
-                guard let _self = self else { return }
-                let alert = UIAlertController.make(
-                    title: LString.titleError,
-                    message: error.localizedDescription)
-                _self.present(alert, animated: true, completion: nil)
+            error: { [weak self] (error) in
+                self?.showErrorAlert(error)
             }
         )
     }

@@ -16,24 +16,29 @@ final class ChaCha20DataCipher: DataCipher {
     
     var initialVectorSize: Int { return 12 } 
     var keySize: Int { return 32 }
-    private var progress = ProgressEx()
+    internal var progress = ProgressEx()
 
     init() {
     }
     
-    func initProgress() -> ProgressEx {
-        progress = ProgressEx()
-        return progress
-    }
-    
     func encrypt(plainText: ByteArray, key: ByteArray, iv: ByteArray) throws -> ByteArray {
-        progress.localizedDescription = NSLocalizedString("Encrypting", comment: "Status message")
+        progress.localizedDescription = NSLocalizedString(
+            "[Cipher/Progress] Encrypting",
+            bundle: Bundle.framework,
+            value: "Encrypting",
+            comment: "Progress status")
+        
         let chacha20 = ChaCha20(key: key, iv: iv)
         return try chacha20.encrypt(data: plainText, progress: progress) 
     }
     
     func decrypt(cipherText: ByteArray, key: ByteArray, iv: ByteArray) throws -> ByteArray {
-        progress.localizedDescription = NSLocalizedString("Decrypting", comment: "Status message")
+        progress.localizedDescription = NSLocalizedString(
+            "[Cipher/Progress] Decrypting",
+            bundle: Bundle.framework,
+            value: "Decrypting",
+            comment: "Progress status")
+        
         let chacha20 = ChaCha20(key: key, iv: iv)
         return try chacha20.decrypt(data: cipherText, progress: progress) 
     }

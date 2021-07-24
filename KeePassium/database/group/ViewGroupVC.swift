@@ -15,13 +15,12 @@ class GroupViewListCell: UITableViewCell {
     @IBOutlet weak var subtitleLabel: UILabel!
 }
 
-struct SearchResult {
-    var group: Group
-    var entries: [Entry]
-}
-
-open class ViewGroupVC: UITableViewController, Refreshable {
-    
+final class ViewGroupVC:
+    TableViewControllerWithContextActions,
+    DatabaseSaving,
+    ProgressViewHost,
+    Refreshable
+{
     private enum CellID {
         static let emptyGroup = "EmptyGroupCell"
         static let group = "GroupCell"
@@ -31,11 +30,12 @@ open class ViewGroupVC: UITableViewController, Refreshable {
     
     @IBOutlet fileprivate weak var groupIconView: UIImageView!
     @IBOutlet fileprivate weak var groupTitleLabel: UILabel!
-    
+    @IBOutlet weak var sortOrderButton: UIBarButtonItem!
+
     weak var group: Group? {
         didSet {
             if let group = group {
-                groupTitleLabel.text = group.name
+                groupTitleLabel.setText(group.name, strikethrough: group.isExpired)
                 groupIconView.image = UIImage.kpIcon(forGroup: group)
             } else {
                 groupTitleLabel.text = nil
@@ -54,7 +54,8 @@ open class ViewGroupVC: UITableViewController, Refreshable {
     private weak var shownEntry: Entry?
 
     private var isActivateSearch: Bool = false
-    private var searchResults: [SearchResult] = []
+    private var searchHelper = SearchHelper()
+    private var searchResults = [GroupedEntries]()
     private var searchController: UISearchController!
     var isSearchActive: Bool {
         guard let searchController = searchController else { return false }
@@ -63,20 +64,35 @@ open class ViewGroupVC: UITableViewController, Refreshable {
     
     private var loadingWarnings: DatabaseLoadingWarnings?
     
-    private var databaseManagerNotifications: DatabaseManagerNotifications!
     private var groupChangeNotifications: GroupChangeNotifications!
     private var entryChangeNotifications: EntryChangeNotifications!
     private var settingsNotifications: SettingsNotifications!
 
+    var databaseExporterTemporaryURL: TemporaryFileURL?
+    
+    var itemRelocationCoordinator: ItemRelocationCoordinator?
+    var groupEditorCoordinator: GroupEditorCoordinator?
+    var entryFieldEditorCoordinator: EntryFieldEditorCoordinator?
+    
     static func make(group: Group?, loadingWarnings: DatabaseLoadingWarnings?=nil) -> ViewGroupVC {
         let viewGroupVC = ViewGroupVC.instantiateFromStoryboard()
         viewGroupVC.group = group
         viewGroupVC.loadingWarnings = loadingWarnings
+        group?.touch(.accessed)
         return viewGroupVC
     }
     
-    override open func viewDidLoad() {
+    deinit {
+        itemRelocationCoordinator = nil
+        groupEditorCoordinator = nil
+        entryFieldEditorCoordinator = nil
+    }
+    
+    override func viewDidLoad() {
         super.viewDidLoad()
+        
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 44.0
         
         tableView.delegate = self
         tableView.dataSource = self
@@ -84,25 +100,25 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             handleItemSelection(indexPath: nil)
         }
 
-        navigationItem.setRightBarButton(UIBarButtonItem(
+        let createItemButton = UIBarButtonItem(
             image: UIImage(asset: .createItemToolbar),
             style: .plain, target: self,
-            action: #selector(onCreateNewItemAction)), animated: false)
+            action: #selector(onCreateNewItemAction))
+        createItemButton.accessibilityLabel = LString.actionCreate
+        navigationItem.setRightBarButton(createItemButton, animated: false)
         
         isActivateSearch = Settings.current.isStartWithSearch && (group?.isRoot ?? false)
         
-        databaseManagerNotifications = DatabaseManagerNotifications(observer: self)
         groupChangeNotifications = GroupChangeNotifications(observer: self)
         entryChangeNotifications = EntryChangeNotifications(observer: self)
         settingsNotifications = SettingsNotifications(observer: self)
         
-        let longPressGestureRecognizer = UILongPressGestureRecognizer(
-            target: self,
-            action: #selector(didLongPressTableView))
-        tableView.addGestureRecognizer(longPressGestureRecognizer)
+        searchController = UISearchController(searchResultsController: nil)
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = true
     }
     
-    override open func viewDidAppear(_ animated: Bool) {
+    override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         
         entryChangeNotifications.startObserving()
@@ -118,20 +134,33 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             showLoadingWarnings(warnings)
             loadingWarnings = nil 
         }
+        
+        if group?.parent == nil { 
+            StoreReviewSuggester.maybeShowAppReview(
+                appVersion: AppInfo.version,
+                occasion: .didOpenDatabase)
+        }
     }
     
-    open override func didMove(toParent parent: UIViewController?) {
+    override func didMove(toParent parent: UIViewController?) {
         guard let group = group else { return }
         
         if DatabaseManager.shared.isDatabaseOpen {
             if parent == nil && group.isRoot {
-                DatabaseManager.shared.closeDatabase(clearStoredKey: false)
+                DatabaseManager.shared.closeDatabase(clearStoredKey: false, ignoreErrors: false) {
+                    [weak self] (error) in
+                    if let error = error {
+                        self?.navigationController?.showErrorAlert(error)
+                    } else {
+                        Diag.debug("Database locked on leaving the root group")
+                    }
+                }
             }
         }
         super.didMove(toParent: parent)
     }
 
-    override open func viewDidDisappear(_ animated: Bool) {
+    override func viewDidDisappear(_ animated: Bool) {
         settingsNotifications.stopObserving()
         groupChangeNotifications.stopObserving()
         entryChangeNotifications.stopObserving()
@@ -142,54 +171,86 @@ open class ViewGroupVC: UITableViewController, Refreshable {
     private func showLoadingWarnings(_ warnings: DatabaseLoadingWarnings) {
         guard !warnings.isEmpty else { return }
         
-        let lastUsedAppName = warnings.databaseGenerator ?? ""
-        let footerLine = NSLocalizedString("Database was last edited by: \(lastUsedAppName)", comment: "Provides the name of the app that was last to write/create the database file.")
-        let message = warnings.messages.joined(separator: "\n\n") + "\n\n" + footerLine
+        var message = warnings.messages.joined(separator: "\n\n")
+        if warnings.isGeneratorImportant {
+            let lastUsedAppName = warnings.databaseGenerator ?? ""
+            let footerLine = String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "[Database/Opened/Warning/lastEdited] Database was last edited by: %@",
+                    value: "Database was last edited by: %@",
+                    comment: "Status message: name of the app that was last to write/create the database file. [lastUsedAppName: String]"),
+                lastUsedAppName)
+            message += "\n\n" + footerLine
+        }
         
         let alert = UIAlertController(
-            title: NSLocalizedString("Your database is ready, but there was an issue.", comment: "Title of a warning message"),
+            title: NSLocalizedString(
+                "[Database/Opened/Warning/title] Your database is ready, but there was an issue.",
+                value: "Your database is ready, but there was an issue.",
+                comment: "Title of a warning message, shown after opening a problematic database"),
             message: message,
             preferredStyle: .alert)
         let continueAction = UIAlertAction(
-            title: NSLocalizedString("Ignore and Continue", comment: "Action: ignore warnings and proceed to work with the database"),
+            title: NSLocalizedString(
+                "[Database/Opened/Warning/action] Ignore and Continue",
+                value: "Ignore and Continue",
+                comment: "Action: ignore warnings and proceed to work with the database"),
             style: .default,
             handler: nil)
         let contactUsAction = UIAlertAction(
             title: LString.actionContactUs,
             style: .default,
             handler: { (action) in
-                SupportEmailComposer.show(includeDiagnostics: true, completion: { (isSent) in
-                    alert.dismiss(animated: false, completion: nil)
-                })
+                let popoverAnchor = PopoverAnchor(sourceView: self.view, sourceRect: self.view.frame)
+                SupportEmailComposer.show(
+                    subject: .problem,
+                    parent: self,
+                    popoverAnchor: popoverAnchor,
+                    completion: { (isSent) in
+                        alert.dismiss(animated: false, completion: nil)
+                    }
+                )
             }
         )
         let lockDatabaseAction = UIAlertAction(
-            title: NSLocalizedString("Close Database", comment: "Action: lock database"),
+            title: NSLocalizedString(
+                "[Database/Opened/Warning/action] Close Database",
+                value: "Close Database",
+                comment: "Action: lock database"),
             style: .cancel,
             handler: { (action) in
-                DatabaseManager.shared.closeDatabase(clearStoredKey: true)
+                DatabaseManager.shared.closeDatabase(clearStoredKey: true, ignoreErrors: false) {
+                    [weak self] (error) in
+                    if let error = error {
+                        self?.showErrorAlert(error)
+                    } else {
+                        Diag.debug("Database locked from a loading warning")
+                    }
+                }
             }
         )
         alert.addAction(continueAction)
         alert.addAction(lockDatabaseAction)
         alert.addAction(contactUsAction)
         present(alert, animated: true, completion: nil)
+        
+        StoreReviewSuggester.registerEvent(.trouble)
     }
-    
+        
     
     private func setupSearch() {
-        if navigationItem.searchController == nil  {
-            searchController = UISearchController(searchResultsController: nil)
-            navigationItem.searchController = searchController
-        } else {
-            searchController = navigationItem.searchController
+        guard navigationItem.searchController != nil else {
+            assertionFailure()
+            return
         }
 
-        navigationItem.hidesSearchBarWhenScrolling = true
         searchController.searchBar.searchBarStyle = .default
         searchController.searchBar.returnKeyType = .search
         searchController.searchBar.barStyle = .default
-        searchController.dimsBackgroundDuringPresentation = false
+        if #available(iOS 13, *) {
+        } else {
+            searchController.dimsBackgroundDuringPresentation = false
+        }
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.hidesNavigationBarDuringPresentation = true
         searchController.delegate = self
@@ -205,6 +266,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
 
     
     func refresh() {
+        refreshSortOrderButton()
         if isSearchActive {
             updateSearchResults(for: searchController)
         } else {
@@ -230,8 +292,11 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
     
+    private func refreshSortOrderButton() {
+        sortOrderButton.image = Settings.current.groupSortOrder.toolbarIcon
+    }
 
-    override open func numberOfSections(in tableView: UITableView) -> Int {
+    override func numberOfSections(in tableView: UITableView) -> Int {
         if isSearchActive {
             return searchResults.isEmpty ? 1 : searchResults.count
         } else {
@@ -239,7 +304,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
 
-    override open func tableView(
+    override func tableView(
         _ tableView: UITableView,
         titleForHeaderInSection section: Int) -> String?
     {
@@ -250,7 +315,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
     
-    override open func tableView(
+    override func tableView(
         _ tableView: UITableView,
         numberOfRowsInSection section: Int) -> Int
     {
@@ -269,7 +334,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
 
-    override open func tableView(
+    override func tableView(
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath) -> UITableViewCell
     {
@@ -287,13 +352,20 @@ open class ViewGroupVC: UITableViewController, Refreshable {
                 for: indexPath)
         }
 
-        let entry = searchResults[indexPath.section].entries[indexPath.row]
-        let cell = tableView.dequeueReusableCell(withIdentifier: CellID.entry, for: indexPath)
-        guard let entryCell = cell as? GroupViewListCell else { fatalError() }
-        entryCell.titleLabel?.text = entry.title
-        entryCell.subtitleLabel?.text = getDetailInfo(forEntry: entry)
-        entryCell.iconView?.image = UIImage.kpIcon(forEntry: entry)
-        return cell
+        let entry = searchResults[indexPath.section].entries[indexPath.row].entry
+        let entryCell = tableView.dequeueReusableCell(
+            withIdentifier: CellID.entry,
+            for: indexPath)
+            as! GroupViewListCell
+        setupCell(
+            entryCell,
+            title: entry.resolvedTitle,
+            subtitle: getDetailInfo(forEntry: entry),
+            image: UIImage.kpIcon(forEntry: entry),
+            isExpired: entry.isExpired,
+            itemCount: nil)
+        setupAccessibilityActions(entryCell, entry: entry)
+        return entryCell
     }
     
     private func getGroupItemCell(at indexPath: IndexPath) -> UITableViewCell {
@@ -302,30 +374,89 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
         
         if indexPath.row < groupsSorted.count {
+            guard let group = groupsSorted[indexPath.row].value else {
+                assertionFailure()
+                return tableView.dequeueReusableCell(withIdentifier: CellID.group, for: indexPath)
+            }
             let groupCell = tableView.dequeueReusableCell(
                 withIdentifier: CellID.group,
                 for: indexPath)
                 as! GroupViewListCell
-            if let _group = groupsSorted[indexPath.row].value {
-                groupCell.titleLabel?.text = _group.name
-                let subitemCount = _group.groups.count + _group.entries.count
-                groupCell.subtitleLabel?.text = "\(subitemCount)"
-                groupCell.iconView?.image = UIImage.kpIcon(forGroup: _group)
-            }
+            let itemCount = group.groups.count + group.entries.count
+            setupCell(
+                groupCell,
+                title: group.name,
+                subtitle: "\(itemCount)",
+                image: UIImage.kpIcon(forGroup: group),
+                isExpired: group.isExpired,
+                itemCount: itemCount)
             return groupCell
         } else {
+            let entryIndex = indexPath.row - groupsSorted.count
+            guard let entry = entriesSorted[entryIndex].value else {
+                assertionFailure()
+                return tableView.dequeueReusableCell(withIdentifier: CellID.entry, for: indexPath)
+            }
+            
             let entryCell = tableView.dequeueReusableCell(
                 withIdentifier: CellID.entry,
                 for: indexPath)
                 as! GroupViewListCell
-            let entryIndex = indexPath.row - groupsSorted.count
-            if let _entry = entriesSorted[entryIndex].value {
-                entryCell.titleLabel?.text = _entry.title
-                entryCell.subtitleLabel?.text = getDetailInfo(forEntry: _entry)
-                entryCell.iconView?.image = UIImage.kpIcon(forEntry: _entry)
-            }
+            setupCell(
+                entryCell,
+                title: entry.resolvedTitle,
+                subtitle: getDetailInfo(forEntry: entry),
+                image: UIImage.kpIcon(forEntry: entry),
+                isExpired: entry.isExpired,
+                itemCount: nil)
+            setupAccessibilityActions(entryCell, entry: entry)
             return entryCell
         }
+    }
+    
+    private func setupCell(
+        _ cell: GroupViewListCell,
+        title: String,
+        subtitle: String?,
+        image: UIImage?,
+        isExpired: Bool,
+        itemCount: Int?)
+    {
+        cell.titleLabel.setText(title, strikethrough: isExpired)
+        cell.subtitleLabel?.setText(subtitle, strikethrough: isExpired)
+        cell.iconView?.image = image
+        
+        if itemCount != nil {
+            cell.accessibilityLabel = String.localizedStringWithFormat(
+                LString.titleGroupDescriptionTemplate,
+                title)
+        }
+    }
+    
+    private func setupAccessibilityActions(_ cell: GroupViewListCell, entry: Entry) {
+        guard #available(iOS 13, *) else { return }
+        
+        var actions = [UIAccessibilityCustomAction]()
+        
+        let nonTitleFields = entry.fields.filter { $0.name != EntryField.title }
+        nonTitleFields.reversed().forEach { (field) in
+            let actionName = String.localizedStringWithFormat(
+                LString.actionCopyToClipboardTemplate,
+                field.name)
+            let action = UIAccessibilityCustomAction(name: actionName) {
+                [weak field] _ -> Bool in
+                if let fieldValue = field?.resolvedValue {
+                    Clipboard.general.insert(fieldValue)
+                    UIAccessibility.post(
+                        notification: .announcement,
+                        argument: LString.titleCopiedToClipboard
+                    )
+                }
+                return true
+            }
+            actions.append(action)
+        }
+        cell.accessibilityCustomActions = actions
     }
 
     func getDetailInfo(forEntry entry: Entry) -> String? {
@@ -333,13 +464,14 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         case .none:
             return nil
         case .userName:
-            return entry.userName
+            return entry.getField(EntryField.userName)?.premiumDecoratedValue
         case .password:
-            return entry.password
+            return entry.getField(EntryField.password)?.premiumDecoratedValue
         case .url:
-            return entry.url
+            return entry.getField(EntryField.url)?.premiumDecoratedValue
         case .notes:
-            return entry.notes
+            return entry.getField(EntryField.notes)?
+                .premiumDecoratedValue
                 .replacingOccurrences(of: "\r", with: " ")
                 .replacingOccurrences(of: "\n", with: " ")
         case .lastModifiedDate:
@@ -350,7 +482,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
     
-    override open func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         if isSearchActive {
             handleItemSelection(indexPath: indexPath)
         } else {
@@ -374,7 +506,7 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             guard indexPath.section < searchResults.count else { return  nil }
             let searchResult = searchResults[indexPath.section]
             guard indexPath.row < searchResult.entries.count else { return nil }
-            return searchResult.entries[indexPath.row]
+            return searchResult.entries[indexPath.row].entry
         } else {
             let entryIndex = indexPath.row - groupsSorted.count
             guard entryIndex >= 0 && entryIndex < entriesSorted.count else { return nil }
@@ -382,6 +514,16 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
 
+    func getItem(at indexPath: IndexPath) -> DatabaseItem? {
+        if let entry = getEntry(at: indexPath) {
+            return entry
+        }
+        if let group = getGroup(at: indexPath) {
+            return group
+        }
+        return nil
+    }
+    
     func handleItemSelection(indexPath: IndexPath?) {
         guard let indexPath = indexPath else {
             shownEntry = nil
@@ -412,43 +554,6 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
     }
     
-    override open func tableView(
-        _ tableView: UITableView,
-        canEditRowAt indexPath: IndexPath) -> Bool
-    {
-        return getEntry(at: indexPath) != nil || getGroup(at: indexPath) != nil
-    }
-
-    override open func tableView(
-        _ tableView: UITableView,
-        editActionsForRowAt indexPath: IndexPath
-        ) -> [UITableViewRowAction]?
-    {
-        let editAction = UITableViewRowAction(style: .default, title: LString.actionEdit)
-        {
-            [unowned self] (_,_) in
-            self.setEditing(false, animated: true)
-            self.onEditItemAction(at: indexPath)
-        }
-        editAction.backgroundColor = UIColor.actionTint
-        
-        let deleteAction = UITableViewRowAction(style: .destructive, title: LString.actionDelete)
-        {
-            [unowned self] (_,_) in
-            self.setEditing(false, animated: true)
-            self.onDeleteItemAction(at: indexPath)
-        }
-        deleteAction.backgroundColor = UIColor.destructiveTint
-     
-        var allowedActions = [deleteAction]
-        if let entry = getEntry(at: indexPath) {
-            if !entry.isDeleted { allowedActions.append(editAction) }
-        } else if let group = getGroup(at: indexPath) {
-            if !group.isDeleted { allowedActions.append(editAction) }
-        }
-        return allowedActions
-    }
-    
     
     private func canCreateGroupHere() -> Bool {
         guard let group = group else { return false }
@@ -465,21 +570,128 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
         return true
     }
+    
+    private func canMove(_ group: Group) -> Bool {
+        guard !group.isRoot else { return false }
+        
+        if let group1 = group as? Group1,
+            let database1 = group1.database as? Database1,
+            group1 === database1.getBackupGroup(createIfMissing: false)
+        {
+            return false
+        }
+        return true
+    }
+    
+    private func canMove(_ entry: Entry) -> Bool {
+        return true
+    }
 
+    private func canEdit(_ group: Group) -> Bool {
+        let isRecycleBin = (group === group.database?.getBackupGroup(createIfMissing: false))
+        if isRecycleBin {
+            let isEditable = group is Group2
+            return isEditable
+        }
+        return !group.isDeleted
+    }
+    
+    private func canEdit(_ entry: Entry) -> Bool {
+        return !entry.isDeleted
+    }
+
+    
+    override func getContextActionsForRow(
+        at indexPath: IndexPath,
+        forSwipe: Bool
+    ) -> [ContextualAction] {
+        guard getItem(at: indexPath) != nil else {
+            return []
+        }
+        
+        let editAction = ContextualAction(
+            title: LString.actionEdit,
+            imageName: .squareAndPencil,
+            style: .default,
+            color: UIColor.actionTint,
+            handler: { [weak self, indexPath] in
+                self?.onEditItemAction(at: indexPath)
+            }
+        )
+        let deleteAction = ContextualAction(
+            title: LString.actionDelete,
+            imageName: .trash,
+            style: .destructive,
+            color: UIColor.destructiveTint,
+            handler: { [weak self, indexPath] in
+                self?.onDeleteItemAction(at: indexPath)
+            }
+        )
+        
+        if forSwipe {
+            if let entry = getEntry(at: indexPath), canEdit(entry) {
+                return [deleteAction, editAction]
+            }
+            if let group = getGroup(at: indexPath), canEdit(group) {
+                return [deleteAction, editAction]
+            }
+            return [deleteAction]
+        }
+        
+        let moveAction = ContextualAction(
+            title: LString.actionMove,
+            imageName: .folder,
+            style: .default,
+            handler: { [weak self, indexPath] in
+                self?.onRelocateItemAction(at: indexPath, mode: .move)
+            }
+        )
+        let copyAction = ContextualAction(
+            title: LString.actionCopy,
+            imageName: .docOnDoc,
+            style: .default,
+            handler: { [weak self, indexPath] in
+                self?.onRelocateItemAction(at: indexPath, mode: .copy)
+            }
+        )
+
+        var actions = [ContextualAction]()
+        if let entry = getEntry(at: indexPath) {
+            if canEdit(entry) {
+                actions.append(editAction)
+            }
+            if canMove(entry) {
+                actions.append(moveAction)
+                actions.append(copyAction)
+            }
+            actions.append(deleteAction)
+        }
+        if let group = getGroup(at: indexPath) {
+            if canEdit(group) {
+                actions.append(editAction)
+            }
+            if canMove(group) {
+                actions.append(moveAction)
+                actions.append(copyAction)
+            }
+            actions.append(deleteAction)
+        }
+        return actions
+    }
+    
 
     @objc func onCreateNewItemAction(sender: UIBarButtonItem) {
         let addItemSheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        let createGroupAction = UIAlertAction(title: LString.actionCreateGroup, style: .default)
-        {
+        let createGroupAction = UIAlertAction(title: LString.actionCreateGroup, style: .default) {
             [weak self] _ in
-            self?.onCreateGroupAction()
+            self?.createGroup()
         }
         createGroupAction.isEnabled = canCreateGroupHere()
         
-        let createEntryAction = UIAlertAction(title: LString.actionCreateEntry, style: .default)
-        {
+        let createEntryAction = UIAlertAction(title: LString.actionCreateEntry, style: .default) {
             [weak self] _ in
-            self?.onCreateEntryAction()
+            self?.createEntry()
+            
         }
         createEntryAction.isEnabled = canCreateEntryHere()
         
@@ -495,47 +707,15 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         }
         present(addItemSheet, animated: true, completion: nil)
     }
-
-    func onCreateGroupAction() {
-        Diag.info("Will create group")
-        guard let parentGroup = self.group else { return }
-        let editGroupVC = EditGroupVC.make(
-            mode: .create,
-            group: parentGroup,
-            popoverSource: nil,
-            delegate: nil)
-        present(editGroupVC, animated: true, completion: nil)
-    }
-
-    func onCreateEntryAction() {
-        Diag.info("Will create entry")
-        guard let group = group else { return }
-        let editEntryVC = EditEntryVC.make(
-            createInGroup: group,
-            popoverSource: nil,
-            delegate: self)
-        present(editEntryVC, animated: true, completion: nil)
-    }
     
     func onEditItemAction(at indexPath: IndexPath) {
-        guard let cell = tableView.cellForRow(at: indexPath) else { return }
-        
+        let popoverAnchor = PopoverAnchor(tableView: tableView, at: indexPath)
         if let selectedGroup = getGroup(at: indexPath) {
-            let editGroupVC = EditGroupVC.make(
-                mode: .edit,
-                group: selectedGroup,
-                popoverSource: cell,
-                delegate: nil)
-            present(editGroupVC, animated: true, completion: nil)
+            editGroup(selectedGroup, at: popoverAnchor)
             return
         }
-        
         if let selectedEntry = getEntry(at: indexPath) {
-            let editEntryVC = EditEntryVC.make(
-                entry: selectedEntry,
-                popoverSource: cell,
-                delegate: nil)
-            present(editEntryVC, animated: true, completion: nil)
+            editEntry(selectedEntry, at: popoverAnchor)
             return
         }
     }
@@ -551,9 +731,8 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             {
                 [weak self] _ in
                 guard let database = targetGroup.database else { return }
-                targetGroup.accessed()
-                targetGroup.modified()
                 database.delete(group: targetGroup)
+                targetGroup.touch(.accessed)
                 self?.saveDatabase()
             }
             confirmationAlert.addAction(deleteAction)
@@ -563,14 +742,13 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         
         if let targetEntry = getEntry(at: indexPath) {
             let isDeletingShownEntry = (targetEntry === shownEntry)
-            confirmationAlert.title = targetEntry.title
+            confirmationAlert.title = targetEntry.resolvedTitle
             let deleteAction = UIAlertAction(title: LString.actionDelete, style: .destructive)
             {
                 [weak self] _ in
                 guard let database = targetEntry.database else { return }
-                targetEntry.accessed()
-                targetEntry.modified()
                 database.delete(entry: targetEntry)
+                targetEntry.touch(.accessed)
                 if isDeletingShownEntry && !(self?.splitViewController?.isCollapsed ?? true) {
                     self?.handleItemSelection(indexPath: nil) 
                 }
@@ -580,6 +758,44 @@ open class ViewGroupVC: UITableViewController, Refreshable {
             present(confirmationAlert, animated: true, completion: nil)
             return
         }
+    }
+    
+
+    func onRelocateItemAction(at indexPath: IndexPath, mode: ItemRelocationMode) {
+        guard let database = group?.database else { return }
+
+        guard let selectedItem = getItem(at: indexPath) else {
+            Diag.warning("No items selected for relocation")
+            assertionFailure()
+            return
+        }
+
+        assert(itemRelocationCoordinator == nil)
+        let popoverAnchor = PopoverAnchor(tableView: tableView, at: indexPath)
+        let modalRouter = NavigationRouter.createModal(style: .popover, at: popoverAnchor)
+        itemRelocationCoordinator = ItemRelocationCoordinator(
+            router: modalRouter,
+            database: database,
+            mode: mode,
+            itemsToRelocate: [Weak(selectedItem)])
+        itemRelocationCoordinator?.dismissHandler = { [weak self] coordinator in
+            self?.itemRelocationCoordinator = nil
+        }
+        itemRelocationCoordinator?.delegate = self
+        itemRelocationCoordinator?.start()
+        present(modalRouter, animated: true, completion: nil)
+    }
+
+    var diagnosticsViewerCoordinator: DiagnosticsViewerCoordinator?
+    func showDiagnostics() {
+        assert(diagnosticsViewerCoordinator == nil)
+        let modalRouter = NavigationRouter.createModal(style: .formSheet)
+        diagnosticsViewerCoordinator = DiagnosticsViewerCoordinator(router: modalRouter)
+        diagnosticsViewerCoordinator!.dismissHandler = { [weak self] coordinator in
+            self?.diagnosticsViewerCoordinator = nil
+        }
+        diagnosticsViewerCoordinator!.start()
+        present(modalRouter, animated: true, completion: nil)
     }
     
     @IBAction func didPressItemListSettings(_ sender: Any) {
@@ -593,8 +809,27 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         present(settingsVC, animated: true, completion: nil)
     }
     
-    @IBAction func didPressLockDatabase(_ sender: Any) {
-        DatabaseManager.shared.closeDatabase(clearStoredKey: true)
+    @IBAction func didPressLockDatabase(_ sender: UIBarButtonItem) {
+        let confirmationAlert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        let lockDatabaseAction = UIAlertAction(title: LString.actionLockDatabase, style: .destructive) {
+            (action) in
+            DatabaseManager.shared.closeDatabase(clearStoredKey: true, ignoreErrors: false) {
+                [weak self] (error) in
+                if let error = error {
+                    self?.showErrorAlert(error)
+                } else {
+                    Diag.debug("Database locked on user request")
+                }
+            }
+        }
+        let cancelAction = UIAlertAction(title: LString.actionCancel, style: .cancel, handler: nil)
+        confirmationAlert.addAction(lockDatabaseAction)
+        confirmationAlert.addAction(cancelAction)
+        confirmationAlert.modalPresentationStyle = .popover
+        if let popover = confirmationAlert.popoverPresentationController {
+            popover.barButtonItem = sender
+        }
+        present(confirmationAlert, animated: true, completion: nil)
     }
     
     @IBAction func didPressChangeDatabaseSettings(_ sender: Any) {
@@ -606,38 +841,107 @@ open class ViewGroupVC: UITableViewController, Refreshable {
         present(vc, animated: true, completion: nil)
     }
     
-    @objc func didLongPressTableView(_ gestureRecognizer: UILongPressGestureRecognizer) {
-        let point = gestureRecognizer.location(in: tableView)
-        guard gestureRecognizer.state == .began,
-            let indexPath = tableView.indexPathForRow(at: point),
-            tableView(tableView, canEditRowAt: indexPath),
-            let cell = tableView.cellForRow(at: indexPath) else { return }
-        cell.demoShowEditActions(lastActionColor: UIColor.destructiveTint)
+    
+    private func editGroup(_ group: Group, at popoverAnchor: PopoverAnchor) {
+        Diag.info("Will edit group")
+        showGroupEditor(for: group, at: popoverAnchor)
+    }
+    
+    private func createGroup() {
+        Diag.info("Will create group")
+        showGroupEditor(for: nil, at: nil)
+    }
+    
+    private func showGroupEditor(for groupToEdit: Group?, at popoverAnchor: PopoverAnchor?) {
+        assert(groupEditorCoordinator == nil)
+        guard let parent = self.group,
+              let database = parent.database
+        else {
+            Diag.warning("Database or parent group are not defined")
+            assertionFailure()
+            return
+        }
+        
+        let modalRouter = NavigationRouter.createModal(style: .formSheet, at: popoverAnchor)
+        let groupEditorCoordinator = GroupEditorCoordinator(
+            router: modalRouter,
+            database: database,
+            parent: parent,
+            target: groupToEdit)
+        groupEditorCoordinator.dismissHandler = { [weak self] coordinator in
+            self?.groupEditorCoordinator = nil
+        }
+        groupEditorCoordinator.delegate = self
+        groupEditorCoordinator.start()
+        self.groupEditorCoordinator = groupEditorCoordinator
+        navigationController?.present(modalRouter, animated: true, completion: nil)
+    }
+    
+    private func editEntry(_ entry: Entry, at popoverAnchor: PopoverAnchor) {
+        Diag.info("Will edit entry")
+        showEntryEditor(for: entry, at: popoverAnchor)
+    }
+    
+    private func createEntry() {
+        Diag.info("Will create entry")
+        showEntryEditor(for: nil, at: nil)
+    }
+    
+    private func showEntryEditor(for entryToEdit: Entry?, at popoverAnchor: PopoverAnchor?) {
+        assert(entryFieldEditorCoordinator == nil)
+        guard let parent = self.group,
+              let database = parent.database
+        else {
+            Diag.warning("Database or parent group are not definted")
+            assertionFailure()
+            return
+        }
+        
+        let modalRouter = NavigationRouter.createModal(style: .formSheet, at: popoverAnchor)
+        let entryFieldEditorCoordinator = EntryFieldEditorCoordinator(
+            router: modalRouter,
+            database: database,
+            parent: parent,
+            target: entryToEdit
+        )
+        entryFieldEditorCoordinator.dismissHandler = { [weak self] coordinator in
+            self?.entryFieldEditorCoordinator = nil
+        }
+        entryFieldEditorCoordinator.delegate = self
+        entryFieldEditorCoordinator.start()
+        modalRouter.dismissAttemptDelegate = entryFieldEditorCoordinator
+        self.entryFieldEditorCoordinator = entryFieldEditorCoordinator
+        navigationController?.present(modalRouter, animated: true, completion: nil)
     }
     
     
     func saveDatabase() {
-        databaseManagerNotifications.startObserving()
+        DatabaseManager.shared.addObserver(self)
         DatabaseManager.shared.startSavingDatabase()
     }
     
+    
     private var savingOverlay: ProgressOverlay?
     
-    private func showSavingOverlay() {
+    public func showProgressView(title: String, allowCancelling: Bool) {
         guard let splitVC = splitViewController else { fatalError() }
         savingOverlay = ProgressOverlay.addTo(
             splitVC.view,
-            title: LString.databaseStatusSaving,
+            title: title,
             animated: true)
-        savingOverlay?.isCancellable = false
+        savingOverlay?.isCancellable = allowCancelling
     }
     
-    private func hideSavingOverlay() {
+    public func updateProgressView(with progress: ProgressEx) {
+        savingOverlay?.update(with: progress)
+    }
+    
+    public func hideProgressView() {
         savingOverlay?.dismiss(animated: true) {
             [weak self] finished in
-            guard let _self = self else { return }
-            _self.savingOverlay?.removeFromSuperview()
-            _self.savingOverlay = nil
+            guard let self = self else { return }
+            self.savingOverlay?.removeFromSuperview()
+            self.savingOverlay = nil
         }
     }
 }
@@ -645,71 +949,56 @@ open class ViewGroupVC: UITableViewController, Refreshable {
 extension ViewGroupVC: DatabaseManagerObserver {
     
     public func databaseManager(willSaveDatabase urlRef: URLReference) {
-        showSavingOverlay()
+        showProgressView(title: LString.databaseStatusSaving, allowCancelling: false)
     }
     
     public func databaseManager(didSaveDatabase urlRef: URLReference) {
-        databaseManagerNotifications.stopObserving()
+        DatabaseManager.shared.removeObserver(self)
         refresh()
-        hideSavingOverlay()
+        hideProgressView()
     }
     
     public func databaseManager(database urlRef: URLReference, isCancelled: Bool) {
-        databaseManagerNotifications.stopObserving()
+        DatabaseManager.shared.removeObserver(self)
         refresh()
-        hideSavingOverlay()
+        hideProgressView()
     }
 
     public func databaseManager(progressDidChange progress: ProgressEx) {
-        savingOverlay?.update(with: progress)
+        updateProgressView(with: progress)
     }
 
     public func databaseManager(
         database urlRef: URLReference,
-        savingError message: String,
-        reason: String?)
-    {
-        databaseManagerNotifications.stopObserving()
+        savingError error: Error,
+        data: ByteArray?
+    ) {
+        DatabaseManager.shared.removeObserver(self)
         refresh()
-        hideSavingOverlay()
-
-        let errorAlert = UIAlertController(title: message, message: reason, preferredStyle: .alert)
-        let showDetailsAction = UIAlertAction(title: LString.actionShowDetails, style: .default)
-        {
-            [weak self] _ in
-            self?.present(ViewDiagnosticsVC.make(), animated: true, completion: nil)
-        }
-        let dismissAction = UIAlertAction(title: LString.actionDismiss, style: .cancel)
-        {
-            [weak self] _ in
-            self?.refresh()
-        }
-        errorAlert.addAction(showDetailsAction)
-        errorAlert.addAction(dismissAction)
-        present(errorAlert, animated: true, completion: nil)
+        hideProgressView()
+        
+        showDatabaseSavingError(
+            error,
+            fileName: urlRef.visibleFileName,
+            diagnosticsHandler: { [weak self] in
+                self?.showDiagnostics()
+            },
+            exportableData: data,
+            parent: self
+        )
     }
 }
 
 extension ViewGroupVC: SettingsObserver {
     public func settingsDidChange(key: Settings.Keys) {
-        if key == .entryListDetail || key == .groupSortOrder {
+        let isRelevantChange =
+                key == .entryListDetail ||
+                key == .groupSortOrder ||
+                key == .searchFieldNames ||
+                key == .searchProtectedValues ||
+                key == .databaseIconSet
+        if isRelevantChange {
             refresh()
-        }
-    }
-}
-
-extension ViewGroupVC: EditEntryFieldsDelegate {
-    func entryEditor(entryDidChange entry: Entry) {
-        refresh()
-        
-        guard let splitVC = splitViewController else { fatalError() }
-        
-        if !splitVC.isCollapsed,
-            let entryIndex = entriesSorted.index(where: { $0.value === entry })
-        {
-            let indexPath = IndexPath(row: groupsSorted.count + entryIndex, section: 0)
-            handleItemSelection(indexPath: indexPath)
-            tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none) 
         }
     }
 }
@@ -717,12 +1006,14 @@ extension ViewGroupVC: EditEntryFieldsDelegate {
 extension ViewGroupVC: EntryChangeObserver {
     func entryDidChange(entry: Entry) {
         refresh()
+        StoreReviewSuggester.maybeShowAppReview(appVersion: AppInfo.version, occasion: .didEditItem)
     }
 }
 
 extension ViewGroupVC: GroupChangeObserver {
     func groupDidChange(group: Group) {
         refresh()
+        StoreReviewSuggester.maybeShowAppReview(appVersion: AppInfo.version, occasion: .didEditItem)
     }
 }
 
@@ -730,41 +1021,10 @@ extension ViewGroupVC: GroupChangeObserver {
 extension ViewGroupVC: UISearchResultsUpdating {
     public func updateSearchResults(for searchController: UISearchController) {
         guard let searchText = searchController.searchBar.text else { return }
-        let words = searchText.split(separator: " " as Character)
-        let query = SearchQuery(
-            includeSubgroups: true,
-            includeDeleted: false,
-            text: searchText,
-            textWords: words)
-        performSearch(query: query)
+        guard let database = group?.database else { return }
+        searchResults = searchHelper.find(database: database, searchText: searchText)
         sortSearchResults()
         tableView.reloadData()
-    }
-    
-    func performSearch(query: SearchQuery) {
-        searchResults.removeAll()
-        guard let database = group?.database else { return }
-
-        var foundEntries: [Entry] = []
-        let foundCount = database.search(query: query, result: &foundEntries)
-        print("Found \(foundCount) entries")
-        searchResults.reserveCapacity(foundCount)
-        
-        for entry in foundEntries {
-            guard let parentGroup = entry.parent else { assertionFailure(); return }
-            var isInserted = false
-            for i in 0..<searchResults.count {
-                if searchResults[i].group === parentGroup {
-                    searchResults[i].entries.append(entry)
-                    isInserted = true
-                    break
-                }
-            }
-            if !isInserted {
-                let newSearchResult = SearchResult(group: parentGroup, entries: [entry])
-                searchResults.append(newSearchResult)
-            }
-        }
     }
     
     private func sortSearchResults() {
@@ -776,5 +1036,33 @@ extension ViewGroupVC: UISearchResultsUpdating {
 extension ViewGroupVC: UISearchControllerDelegate {
     public func didDismissSearchController(_ searchController: UISearchController) {
         refresh()
+    }
+}
+
+extension ViewGroupVC: ItemRelocationCoordinatorDelegate {
+    func didRelocateItems(in coordinator: ItemRelocationCoordinator) {
+        refresh()
+    }
+}
+
+extension ViewGroupVC: GroupEditorCoordinatorDelegate {
+    func didUpdateGroup(_ group: Group, in coordinator: GroupEditorCoordinator) {
+        refresh()
+    }
+}
+
+extension ViewGroupVC: EntryFieldEditorCoordinatorDelegate {
+    func didUpdateEntry(_ entry: Entry, in coordinator: EntryFieldEditorCoordinator) {
+        refresh()
+        
+        guard let splitVC = splitViewController else { fatalError() }
+        
+        if !splitVC.isCollapsed,
+            let entryIndex = entriesSorted.firstIndex(where: { $0.value === entry })
+        {
+            let indexPath = IndexPath(row: groupsSorted.count + entryIndex, section: 0)
+            handleItemSelection(indexPath: indexPath)
+            tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none) 
+        }
     }
 }

@@ -13,7 +13,9 @@ final class Header2: Eraseable {
     private static let signature2: UInt32 = 0xB54BFB67
     private static let fileVersion3: UInt32 = 0x00030001
     private static let fileVersion4: UInt32 = 0x00040000
-    private static let versionMask: UInt32 = 0xFFFF0000
+    private static let fileVersion4_1: UInt32 = 0x00040001
+    private static let majorVersionMask: UInt32 = 0xFFFF0000
+
 
     enum HeaderError: LocalizedError {
         case readingError
@@ -27,30 +29,87 @@ final class Header2: Eraseable {
         case hashMismatch 
         case hmacMismatch 
         case corruptedField(fieldName: String)
+        
         public var errorDescription: String? {
             switch self {
             case .readingError:
-                return NSLocalizedString("Header reading error. DB file corrupted?", comment: "Error message when reading database header")
+                return NSLocalizedString(
+                    "[Database2/Header2/Error] Header reading error. DB file corrupt?",
+                    bundle: Bundle.framework,
+                    value: "Header reading error. DB file corrupt?",
+                    comment: "Error message when reading database header")
             case .wrongSignature:
-                return NSLocalizedString("Wrong file signature. Not a KeePass database?", comment: "Error message when opening a database")
+                return NSLocalizedString(
+                    "[Database2/Header2/Error] Wrong file signature. Not a KeePass database?",
+                    bundle: Bundle.framework,
+                    value: "Wrong file signature. Not a KeePass database?",
+                    comment: "Error message when opening a database")
             case .unsupportedFileVersion(let version):
-                return NSLocalizedString("Unsupported database format version: \(version).", comment: "Error message when opening a database")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Unsupported database format version: %@.",
+                        bundle: Bundle.framework,
+                        value: "Unsupported database format version: %@.",
+                        comment: "Error message when opening a database. [version: String]"),
+                    version)
             case .unsupportedDataCipher(let uuidHexString):
-                return NSLocalizedString("Unsupported data cipher: \(uuidHexString.prefix(32))", comment: "Error message")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Unsupported data cipher: %@",
+                        bundle: Bundle.framework,
+                        value: "Unsupported data cipher: %@",
+                        comment: "Error message. [uuidHexString: String]"),
+                    uuidHexString.prefix(32).localizedUppercase)
             case .unsupportedStreamCipher(let id):
-                return NSLocalizedString("Unsupported inner stream cipher (ID \(id).", comment: "Error message when opening a database")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Unsupported inner stream cipher (ID %d)",
+                        bundle: Bundle.framework,
+                        value: "Unsupported inner stream cipher (ID %d)",
+                        comment: "Error message when opening a database. [id: UInt32]"),
+                    id)
             case .unsupportedKDF(let uuid):
-                return NSLocalizedString("Unsupported KDF: \(uuid.uuidString)", comment: "Error message")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Unsupported KDF: %@",
+                        bundle: Bundle.framework,
+                        value: "Unsupported KDF: %@",
+                        comment: "Error message about Key Derivation Function. [uuidString: String]"),
+                    uuid.uuidString)
             case .unknownCompressionAlgorithm:
-                return NSLocalizedString("Unknown compression algorithm.", comment: "Error message when opening a database")
+                return NSLocalizedString(
+                    "[Database2/Header2/Error] Unknown compression algorithm.",
+                    bundle: Bundle.framework,
+                    value: "Unknown compression algorithm.",
+                    comment: "Error message when opening a database")
             case .binaryUncompressionError(let reason):
-                return NSLocalizedString("Failed to uncompress attachment data: \(reason)", comment: "Error message when saving a database")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Failed to uncompress attachment data: %@",
+                        bundle: Bundle.framework,
+                        value: "Failed to uncompress attachment data: %@",
+                        comment: "Error message when saving a database. [reason: String]"),
+                    reason)
             case .corruptedField(let fieldName):
-                return NSLocalizedString("Header field \(fieldName) is corrupted.", comment: "Error message, with the name of problematic field")
+                return String.localizedStringWithFormat(
+                    NSLocalizedString(
+                        "[Database2/Header2/Error] Header field %@ is corrupted.",
+                        bundle: Bundle.framework,
+                        value: "Header field %@ is corrupted.",
+                        comment: "Error message, with the name of problematic field. [fieldName: String]"),
+                    fieldName)
             case .hashMismatch:
-                return NSLocalizedString("Header hash mismatch. DB file corrupt?", comment: "Error message")
+                return NSLocalizedString(
+                    "[Database2/Header2/Error] Header hash mismatch. DB file corrupt?",
+                    bundle: Bundle.framework,
+                    value: "Header hash mismatch. DB file corrupt?",
+                    comment: "Error message")
             case .hmacMismatch:
-                return NSLocalizedString("Header HMAC mismatch. DB file corrupt?", comment: "Error message. HMAC = https://en.wikipedia.org/wiki/HMAC")
+                return NSLocalizedString(
+                    "[Database2/Header2/Error] Header HMAC mismatch. DB file corrupt?",
+                    bundle: Bundle.framework,
+                    value: "Header HMAC mismatch. DB file corrupt?",
+                    comment: "Error message. HMAC = https://en.wikipedia.org/wiki/HMAC")
             }
         }
     }
@@ -188,19 +247,19 @@ final class Header2: Eraseable {
         dataCipher = ChaCha20DataCipher()
         fields[.cipherID] = dataCipher.uuid.data
         
-        kdf = Argon2KDF()
+        kdf = Argon2dKDF()
         kdfParams = kdf.defaultParams
         let iterations: UInt64 = 100
         let memory: UInt64 = 1*1024*1024
         let parallelism: UInt32 = 2
         kdfParams.setValue(
-            key: Argon2KDF.iterationsParam,
+            key: AbstractArgon2KDF.iterationsParam,
             value: VarDict.TypedValue(value: iterations))
         kdfParams.setValue(
-            key: Argon2KDF.memoryParam,
+            key: AbstractArgon2KDF.memoryParam,
             value: VarDict.TypedValue(value: memory))
         kdfParams.setValue(
-            key: Argon2KDF.parallelismParam,
+            key: AbstractArgon2KDF.parallelismParam,
             value: VarDict.TypedValue(value: parallelism))
         fields[.kdfParameters] = kdfParams.data!
         
@@ -215,6 +274,51 @@ final class Header2: Eraseable {
         initialized = true
     }
     
+    private func verifyFileSignature(stream: ByteArray.InputStream, headerSize: inout Int) throws {
+        guard let sign1: UInt32 = stream.readUInt32(),
+              let sign2: UInt32 = stream.readUInt32()
+        else {
+            Diag.error("Signature is too short")
+            throw HeaderError.readingError
+        }
+        headerSize += sign1.byteWidth + sign2.byteWidth
+        guard sign1 == Header2.signature1 else {
+            Diag.error("Wrong signature #1")
+            throw HeaderError.wrongSignature
+        }
+        guard sign2 == Header2.signature2 else {
+            Diag.error("Wrong signature #2")
+            throw HeaderError.wrongSignature
+        }
+    }
+    
+    private func readFormatVersion(stream: ByteArray.InputStream, headerSize: inout Int) throws {
+        guard let fileVersion: UInt32 = stream.readUInt32() else {
+            Diag.error("Signature is too short")
+            throw HeaderError.readingError
+        }
+        headerSize += fileVersion.byteWidth
+
+        let maskedFileVersion = fileVersion & Header2.majorVersionMask
+        if maskedFileVersion == (Header2.fileVersion3 & Header2.majorVersionMask) {
+            Diag.verbose("Database format: v3")
+            formatVersion = .v3
+            return
+        }
+        
+        if maskedFileVersion == (Header2.fileVersion4 & Header2.majorVersionMask) {
+            formatVersion = .v4
+            if fileVersion == Header2.fileVersion4_1 {
+                formatVersion = .v4_1
+            }
+            Diag.verbose("Database format: \(formatVersion)")
+            return
+        }
+        
+        Diag.error("Unsupported file version [version: \(fileVersion.asHexString)]")
+        throw HeaderError.unsupportedFileVersion(actualVersion: fileVersion.asHexString)
+    }
+    
     func read(data inputData: ByteArray) throws {
         assert(!initialized, "Tried to read already initialized header")
         
@@ -224,32 +328,8 @@ final class Header2: Eraseable {
         stream.open()
         defer { stream.close() }
         
-        guard let sign1: UInt32 = stream.readUInt32(),
-            let sign2: UInt32 = stream.readUInt32(),
-            let fileVer: UInt32 = stream.readUInt32() else {
-                Diag.error("Signature is too short")
-                throw HeaderError.readingError
-        }
-        headerSize += sign1.byteWidth + sign2.byteWidth + fileVer.byteWidth
-        guard sign1 == Header2.signature1 else {
-            Diag.error("Wrong signature #1")
-            throw HeaderError.wrongSignature
-        }
-        guard sign2 == Header2.signature2 else {
-            Diag.error("Wrong signature #2")
-            throw HeaderError.wrongSignature
-        }
-        
-        if (fileVer & Header2.versionMask) == (Header2.fileVersion3 & Header2.versionMask) {
-            Diag.verbose("Database format: v3")
-            formatVersion = .v3
-        } else if (fileVer & Header2.versionMask) == (Header2.fileVersion4 & Header2.versionMask) {
-            Diag.verbose("Database format: v4")
-            formatVersion = .v4
-        } else {
-            Diag.error("Unsupported file version [version: \(fileVer.asHexString)]")
-            throw HeaderError.unsupportedFileVersion(actualVersion: fileVer.asHexString)
-        }
+        try verifyFileSignature(stream: stream, headerSize: &headerSize) 
+        try readFormatVersion(stream: stream, headerSize: &headerSize) 
         Diag.verbose("Header signatures OK")
         
         while (true) {
@@ -262,7 +342,7 @@ final class Header2: Eraseable {
                 guard let fSize = stream.readUInt16() else { throw HeaderError.readingError }
                 fieldSize = Int(fSize)
                 headerSize += MemoryLayout.size(ofValue: fSize) + fieldSize
-            case .v4:
+            case .v4, .v4_1:
                 guard let fSize = stream.readUInt32() else { throw HeaderError.readingError }
                 fieldSize = Int(fSize)
                 headerSize += MemoryLayout.size(ofValue: fSize) + fieldSize
@@ -393,7 +473,7 @@ final class Header2: Eraseable {
                 self.innerStreamAlgorithm = protectedStreamAlgorithm
                 Diag.verbose("\(fieldID.name) read OK [name: \(innerStreamAlgorithm.name)]")
             case .kdfParameters: 
-                guard formatVersion == .v4 else {
+                guard formatVersion >= .v4 else {
                     Diag.error("Found \(fieldID.name) in non-V4 header. Database corrupted?")
                     throw HeaderError.corruptedField(fieldName: fieldID.name)
                 }
@@ -409,7 +489,7 @@ final class Header2: Eraseable {
                 self.kdf = _kdf
                 Diag.verbose("\(fieldID.name) read OK")
             case .publicCustomData:
-                guard formatVersion == .v4 else {
+                guard formatVersion >= .v4 else {
                     Diag.error("Found \(fieldID.name) in non-V4 header. Database corrupted?")
                     throw HeaderError.corruptedField(fieldName: fieldID.name)
                 }
@@ -444,7 +524,7 @@ final class Header2: Eraseable {
                 .cipherID, .compressionFlags, .masterSeed, .transformSeed,
                 .transformRounds, .encryptionIV, .streamStartBytes,
                 .protectedStreamKey, .innerRandomStreamID]
-        case .v4:
+        case .v4, .v4_1:
             importantFields =
                 [.cipherID, .compressionFlags, .masterSeed, .encryptionIV, .kdfParameters]
         }
@@ -563,11 +643,15 @@ final class Header2: Eraseable {
         case .v3:
             headerStream.write(value: Header2.fileVersion3)
             writeV3(stream: headerStream)
-            Diag.verbose("KP2v3 header written OK")
+            Diag.verbose("kdbx3 header written OK")
         case .v4:
             headerStream.write(value: Header2.fileVersion4)
             writeV4(stream: headerStream)
-            Diag.verbose("KP2v4 header written OK")
+            Diag.verbose("kdbx4 header written OK")
+        case .v4_1:
+            headerStream.write(value: Header2.fileVersion4_1)
+            writeV4(stream: headerStream)
+            Diag.verbose("kdbx4.1 header written OK")
         }
         
         let headerData = headerStream.data!
@@ -630,10 +714,10 @@ final class Header2: Eraseable {
     }
     
     func writeInner(to stream: ByteArray.OutputStream) throws {
-        assert(formatVersion == .v4)
+        assert(formatVersion >= .v4)
         guard let protectedStreamKey = protectedStreamKey else { fatalError() }
         
-        Diag.verbose("Writing KP2v4 inner header")
+        Diag.verbose("Writing kdbx4 inner header")
         stream.write(value: InnerFieldID.innerRandomStreamID.rawValue) 
         stream.write(value: UInt32(MemoryLayout.size(ofValue: innerStreamAlgorithm.rawValue))) 
         stream.write(value: innerStreamAlgorithm.rawValue) 
@@ -678,7 +762,7 @@ final class Header2: Eraseable {
         case .v3:
             protectedStreamKey = SecureByteArray(try CryptoManager.getRandomBytes(count: 32)) 
             fields[.streamStartBytes] = try CryptoManager.getRandomBytes(count: SHA256_SIZE)
-        case .v4:
+        case .v4, .v4_1:
             protectedStreamKey = SecureByteArray(try CryptoManager.getRandomBytes(count: 64)) 
         }
         initStreamCipher()

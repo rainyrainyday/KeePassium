@@ -13,23 +13,36 @@ class SettingsDataProtectionVC: UITableViewController, Refreshable {
 
     @IBOutlet weak var rememberMasterKeysSwitch: UISwitch!
     @IBOutlet weak var clearMasterKeysButton: UIButton!
-    
+    @IBOutlet weak var rememberFinalKeysSwitch: UISwitch!
+    @IBOutlet weak var rememberFinalKeysLabel: UILabel!
+    @IBOutlet weak var rememberFinalKeysCell: UITableViewCell!
+
     @IBOutlet weak var rememberUsedKeyFiles: UISwitch!
     @IBOutlet weak var clearKeyFileAssociationsButton: UIButton!
     
     @IBOutlet weak var databaseTimeoutCell: UITableViewCell!
-    @IBOutlet weak var lockDatabaseOnFailedPasscodeSwitch: UISwitch!
+    @IBOutlet weak var lockDatabaseOnTimeoutLabel: UILabel!
+    @IBOutlet weak var lockDatabaseOnTimeoutSwitch: UISwitch!
+    @IBOutlet weak var lockDatabaseOnTimeoutPremiumBadge: UIImageView!
     
     @IBOutlet weak var clipboardTimeoutCell: UITableViewCell!
+    @IBOutlet weak var universalClipboardSwitch: UISwitch!
+    
+    @IBOutlet weak var hideProtectedFieldsSwitch: UISwitch!
     
     private var settingsNotifications: SettingsNotifications!
-    
+    private var premiumUpgradeHelper = PremiumUpgradeHelper()
     
     
     override func viewDidLoad() {
         super.viewDidLoad()
         clearsSelectionOnViewWillAppear = true
         settingsNotifications = SettingsNotifications(observer: self)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshPremiumStatus),
+            name: PremiumManager.statusUpdateNotification,
+            object: nil)
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -46,46 +59,85 @@ class SettingsDataProtectionVC: UITableViewController, Refreshable {
     func refresh() {
         let settings = Settings.current
         rememberMasterKeysSwitch.isOn = settings.isRememberDatabaseKey
-        rememberUsedKeyFiles.isOn = settings.isKeepKeyFileAssociations
-        databaseTimeoutCell.detailTextLabel?.text = settings.databaseLockTimeout.shortTitle
-        lockDatabaseOnFailedPasscodeSwitch.isOn = settings.isLockAllDatabasesOnFailedPasscode
+        rememberFinalKeysCell.setEnabled(settings.isRememberDatabaseKey)
+        rememberFinalKeysSwitch.isEnabled = settings.isRememberDatabaseKey
+        rememberFinalKeysSwitch.isOn = settings.isRememberDatabaseFinalKey
+        
+        rememberUsedKeyFiles.isOn = settings.premiumIsKeepKeyFileAssociations
+        universalClipboardSwitch.isOn = settings.isUniversalClipboardEnabled
+        hideProtectedFieldsSwitch.isOn = settings.isHideProtectedFields
+        databaseTimeoutCell.detailTextLabel?.text = settings.premiumDatabaseLockTimeout.shortTitle
+        
+        lockDatabaseOnTimeoutSwitch.isOn = settings.premiumIsLockDatabasesOnTimeout
+        let canKeepMasterKeyOnDatabaseTimeout =
+            PremiumManager.shared.isAvailable(feature: .canKeepMasterKeyOnDatabaseTimeout)
+        lockDatabaseOnTimeoutPremiumBadge.isHidden = canKeepMasterKeyOnDatabaseTimeout
+        lockDatabaseOnTimeoutLabel.accessibilityLabel =
+            AccessibilityHelper.decorateAccessibilityLabel(
+                premiumFeature: lockDatabaseOnTimeoutLabel.text,
+                isEnabled: canKeepMasterKeyOnDatabaseTimeout
+            )
+        
         clipboardTimeoutCell.detailTextLabel?.text = settings.clipboardTimeout.shortTitle
+    }
+    
+    @objc func refreshPremiumStatus() {
+        refresh()
     }
     
     
     @IBAction func didToggleRememberMasterKeys(_ sender: UISwitch) {
-        Settings.current.isRememberDatabaseKey = rememberMasterKeysSwitch.isOn
+        let isRemember = rememberMasterKeysSwitch.isOn
+        Settings.current.isRememberDatabaseKey = isRemember
         refresh()
-    }
-    
-    @IBAction func didPressClearMasterKeys(_ sender: Any) {
-        do {
-            try Keychain.shared.removeAllDatabaseKeys() 
-            let confirmationAlert = UIAlertController.make(
-                title: NSLocalizedString("Cleared", comment: "Title of the success message for `Remove Master Keys` button"),
-                message: NSLocalizedString("All master keys have been removed.", comment: "Success message for `Remove Master Keys` button"),
-                cancelButtonTitle: LString.actionOK)
-            present(confirmationAlert, animated: true, completion: nil)
-        } catch {
-            let errorAlert = UIAlertController.make(
-                title: LString.titleKeychainError,
-                message: error.localizedDescription,
-                cancelButtonTitle: LString.actionDismiss)
-            present(errorAlert, animated: true, completion: nil)
+        if !isRemember {
+            didPressClearMasterKeys(self)
         }
     }
     
+    @IBAction func didToggleRememberFinalKeys(_ sender: UISwitch) {
+        let isRemember = rememberFinalKeysSwitch.isOn
+        Settings.current.isRememberDatabaseFinalKey = isRemember
+        refresh()
+        if !isRemember {
+            rememberFinalKeysLabel.flashColor(to: .destructiveTint, duration: 0.7)
+            DatabaseSettingsManager.shared.eraseAllFinalKeys()
+            Diag.info("Final keys erased successfully")
+        }
+    }
+    
+    @IBAction func didPressClearMasterKeys(_ sender: Any) {
+        DatabaseSettingsManager.shared.eraseAllMasterKeys()
+        let confirmationAlert = UIAlertController.make(
+            title: NSLocalizedString(
+                "[Settings/ClearMasterKeys/Cleared/title] Cleared",
+                value: "Cleared",
+                comment: "Title of the success message for `Clear Master Keys` button"),
+            message: NSLocalizedString(
+                "[Settings/ClearMasterKeys/Cleared/text] All master keys have been deleted.",
+                value: "All master keys have been deleted.",
+                comment: "Text of the success message for `Clear Master Keys` button"),
+            dismissButtonTitle: LString.actionOK)
+        present(confirmationAlert, animated: true, completion: nil)
+    }
+    
     @IBAction func didToggleRememberUsedKeyFiles(_ sender: UISwitch) {
-        Settings.current.isKeepKeyFileAssociations = rememberUsedKeyFiles.isOn
+        Settings.current.isKeepKeyFileAssociations = sender.isOn
         refresh()
     }
     
     @IBAction func didPressClearKeyFileAssociations(_ sender: Any) {
-        Settings.current.removeAllKeyFileAssociations()
+        DatabaseSettingsManager.shared.forgetAllKeyFiles()
         let confirmationAlert = UIAlertController.make(
-            title: NSLocalizedString("Cleared", comment: "Title of the success message for `Clear Key File Associations` button"),
-            message: NSLocalizedString("Associations between key files and databases have been removed.", comment: "Success message for `Clear Key File Associations` button"),
-            cancelButtonTitle: LString.actionOK)
+            title: NSLocalizedString(
+                "[Settings/ClearKeyFileAssociations/Cleared/title] Cleared",
+                value: "Cleared",
+                comment: "Title of the success message for `Clear Key File Associations` button"),
+            message: NSLocalizedString(
+                "[Settings/ClearKeyFileAssociations/Cleared/text] Associations between key files and databases have been removed.",
+                value: "Associations between key files and databases have been removed.",
+                comment: "Text of the success message for `Clear Key File Associations` button"),
+            dismissButtonTitle: LString.actionOK)
         present(confirmationAlert, animated: true, completion: nil)
     }
     
@@ -93,9 +145,15 @@ class SettingsDataProtectionVC: UITableViewController, Refreshable {
         let databaseTimeoutVC = SettingsDatabaseTimeoutVC.make()
         show(databaseTimeoutVC, sender: self)
     }
-
-    @IBAction func didToggleLockDatabaseOnFailedPasscode(_ sender: UISwitch) {
-        Settings.current.isLockAllDatabasesOnFailedPasscode = lockDatabaseOnFailedPasscodeSwitch.isOn
+    
+    @IBAction func didToggleLockDatabasesOnTimeoutSwitch(_ sender: UISwitch) {
+        premiumUpgradeHelper.performActionOrOfferUpgrade(
+            .canKeepMasterKeyOnDatabaseTimeout,
+            in: self,
+            actionHandler: { [sender] in
+                Settings.current.isLockDatabasesOnTimeout = sender.isOn
+            }
+        )
         refresh()
     }
     
@@ -104,6 +162,15 @@ class SettingsDataProtectionVC: UITableViewController, Refreshable {
         show(clipboardTimeoutVC, sender: self)
     }
 
+    @IBAction func didToggleUniversalClipboardSwitch(_ sender: UISwitch) {
+        Settings.current.isUniversalClipboardEnabled = sender.isOn
+        refresh()
+    }
+    
+    @IBAction func didToggleHideProtectedFieldsSwitch(_ sender: UISwitch) {
+        Settings.current.isHideProtectedFields = sender.isOn
+        refresh()
+    }
     
     
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -122,6 +189,7 @@ class SettingsDataProtectionVC: UITableViewController, Refreshable {
 
 extension SettingsDataProtectionVC: SettingsObserver {
     func settingsDidChange(key: Settings.Keys) {
+        guard key != .recentUserActivityTimestamp else { return }
         refresh()
     }
 }
